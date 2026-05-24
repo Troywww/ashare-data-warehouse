@@ -1,0 +1,33 @@
+# Git
+.git/
+.gitattributes
+.gitignore
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# Data (mounted as volume, not copied)
+data/
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Temp
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/

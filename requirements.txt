@@ -1,0 +1,26 @@
+﻿# ===================================
+# A股数据仓库 — 数据摄入依赖
+# opentdx 不在 PyPI，通过本地 wheels 目录安装
+# ===================================
+
+# 数据存储
+duckdb>=1.1.0
+pyarrow>=17.0.0
+
+# 数据处理
+pandas>=2.0.0
+
+# 数据源（opentdx 从本地 wheel 安装，见 Dockerfile）
+akshare>=1.12.0
+baostock>=0.8.0
+
+# 网络请求
+requests>=2.31.0
+
+# 配置与调度
+pyyaml>=6.0
+schedule>=1.2.0
+python-dotenv>=1.0.0
+
+# 工具
+tenacity>=8.2.0

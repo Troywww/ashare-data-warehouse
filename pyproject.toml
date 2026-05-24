@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ashare-data-warehouse"
+version = "0.1.0"
+description = "A股数据仓库 — 每日增量更新，Docker 部署，可配置"
+requires-python = ">=3.10"
+dependencies = [
+    "duckdb>=1.1.0",
+    "pandas>=2.0.0",
+    "requests>=2.31.0",
+    "pyyaml>=6.0",
+    "schedule>=1.2.0",
+    "akshare>=1.12.0",
+    "baostock>=0.8.0",
+    "tenacity>=8.2.0",
+    "python-dotenv>=1.0.0",
+    "pyarrow>=17.0.0",
+]
+
+[project.scripts]
+ingestion = "src.ingestion.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.black]
+line-length = 120
+target-version = ['py310', 'py311', 'py312']
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.bandit]
+exclude_dirs = ["tests", "test_*.py"]
+skips = ["B101"]

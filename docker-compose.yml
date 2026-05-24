@@ -1,0 +1,44 @@
+# ============================================================================
+# A股数据仓库 — Docker Compose
+# ============================================================================
+# Usage:
+#   docker compose up -d                    # Start scheduler
+#   docker compose exec ingestion daily-update   # Manual trigger
+#   docker compose exec ingestion status         # Check data
+# ============================================================================
+
+services:
+  ingestion:
+    build: .
+    image: ashare-data-warehouse:latest
+    container_name: ashare-data-warehouse
+    restart: unless-stopped
+
+    # Mount config & data as volumes for persistence
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      # 将宿主机 data/ingestion 目录挂载到容器，持久化 DuckDB 数据
+      # 默认路径相对于 compose 文件所在目录的 ../data/ingestion
+      - ../data/ingestion:/app/data/ingestion
+
+    # Environment variables override config.yaml values
+    environment:
+      - INGESTION_DB_PATH=/app/data/ingestion/stock_research.duckdb
+      - INGESTION_DATA_DIR=/app/data/ingestion
+      - TZ=Asia/Shanghai
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+
+    # Healthcheck
+    healthcheck:
+      test: ["CMD", "python", "-c", "from src.ingestion.db import IngestionDB; db = IngestionDB(); sz = db.get_db_size(); print(f'DB size: {sz} bytes')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

@@ -1,0 +1,70 @@
+﻿# ============================================================================
+# A股数据仓库 — 配置文件
+# ============================================================================
+# 所有值均可被环境变量覆盖: INGESTION_DB_PATH, INGESTION_SCHEDULE_CORE 等。
+# 优先级: 环境变量 > YAML > 默认值
+# ============================================================================
+
+# ---- 数据存储路径 ----
+db_path: ./data/ingestion/stock_research.duckdb
+data_dir: ./data/ingestion
+
+# ---- 调度时间 ----
+# 格式: HH:MM（24h）
+# 支持组名（core/signals）和单个表名（daily_ohlcv/daily_valuation/...）
+# 也支持: monthly, quarterly, yearly（后跟 HH:MM）
+# 如果某个表不在任何调度项中，默认使用 core 的时间
+schedule:
+  # 核心行情组（16:00 收盘后）
+  core: "16:00"
+  
+  # 信号组（17:00 交易所数据更新后）
+  signals: "17:00"
+  
+  # 外围行情（09:00 开盘前更新前日数据）
+  global_markets: "09:00"
+  
+  # 低频
+  trade_calendar: "yearly 10:00"
+  holder_count: "monthly 10:00"
+  fundamentals: "quarterly 10:00"
+
+# ---- 性能 ----
+thread_pool: 8
+
+# ---- 调度组（应用层可自定义哪些表分在一组跑） ----
+schedule_groups:
+  core:
+    - stock_universe
+    - stock_classification
+    - concept_blocks
+    - daily_ohlcv
+    - daily_valuation
+    - capital_flow
+    - northbound_flow
+    - board_daily
+    - xdxr_events
+  signals:
+    - dragon_tiger
+    - hot_stocks
+    - hot_reasons
+    - margin_trading
+    - block_trades
+    - lockup_calendar
+
+# ---- 数据源开关（false = 跳过该源的 fetcher） ----
+sources:
+  opentdx: true
+  baostock: true
+  tencent_api: true
+  eastmoney: true
+  akshare: true
+
+# ---- 日志 ----
+logging:
+  level: INFO
+  file: null
+
+# ---- DuckDB 调优 ----
+duckdb_memory_limit: 2GB
+duckdb_threads: 4
