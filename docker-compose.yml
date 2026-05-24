@@ -13,6 +13,7 @@ services:
     image: ashare-data-warehouse:latest
     container_name: ashare-data-warehouse
     restart: unless-stopped
+    network_mode: host
 
     # Mount config & data as volumes for persistence
     volumes:
