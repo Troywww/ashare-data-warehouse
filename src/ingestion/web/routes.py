@@ -7,6 +7,7 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
+import pandas as pd
 from flask import Blueprint, Flask, Response, jsonify, render_template, request
 
 from src.ingestion.config import load_config
@@ -20,9 +21,22 @@ bp = Blueprint("web", __name__, url_prefix="/")
 
 # 全局状态
 _config_path: str = "config.yaml"
-_running_tasks: dict[str, dict] = {}  # task_id -> {name, status, progress, rows, error}
+_running_tasks: dict[str, dict] = {}
 _task_counter: int = 0
 _lock = threading.Lock()
+
+# 表分类与顺序（按业务层级排列）
+TABLE_CATEGORIES = [
+    {"name": "基础数据", "icon": "📁", "tables": ["trade_calendar", "stock_universe", "stock_classification", "concept_blocks"]},
+    {"name": "行情数据", "icon": "📈", "tables": ["daily_ohlcv", "daily_valuation", "xdxr_events"]},
+    {"name": "资金流向", "icon": "💰", "tables": ["capital_flow", "northbound_flow", "margin_trading"]},
+    {"name": "市场信号", "icon": "🔔", "tables": ["dragon_tiger", "board_daily", "hot_stocks", "hot_reasons", "block_trades", "lockup_calendar"]},
+    {"name": "财务数据", "icon": "📄", "tables": ["fundamentals", "holder_count"]},
+    {"name": "外围市场", "icon": "🌍", "tables": ["global_markets"]},
+]
+
+# 哪些表支持历史回补
+BACKFILL_TABLES = {"daily_ohlcv", "daily_valuation"}
 
 
 def init_app(app: Flask) -> None:
@@ -42,8 +56,23 @@ def dashboard():
 
 @bp.route("/update")
 def update_page():
-    tables = sorted(FETCHER_REGISTRY.keys())
-    return render_template("update.html", tables=tables)
+    # 将 TABLE_CATEGORIES 转为包含 supports_backfill 的完整结构
+    categories = []
+    for cat in TABLE_CATEGORIES:
+        tables = []
+        for name in cat["tables"]:
+            entry = FETCHER_REGISTRY.get(name)
+            tables.append({
+                "name": name,
+                "supports_backfill": name in BACKFILL_TABLES,
+                "description": entry.description if entry else "",
+            })
+        categories.append({
+            "name": cat["name"],
+            "icon": cat["icon"],
+            "tables": tables,
+        })
+    return render_template("update.html", categories=categories)
 
 
 @bp.route("/search")
@@ -108,23 +137,50 @@ def api_tables():
     try:
         cfg = load_config(_config_path)
         db = IngestionDB(cfg.db_path)
-        tables = []
-        for name, entry in FETCHER_REGISTRY.items():
+
+        # 读取进度文件
+        progress_data = {}
+        progress_path = Path(cfg.data_dir) / ".progress.json"
+        if progress_path.exists():
             try:
-                count = db.count(name)
-                max_date = db.get_max_date(name)
+                progress_data = json.loads(progress_path.read_text(encoding="utf-8"))
             except Exception:
-                count = 0
-                max_date = None
-            tables.append({
-                "name": name,
-                "rows": count,
-                "max_date": max_date.isoformat() if max_date else None,
-                "group": entry.group,
-                "description": entry.description,
+                pass
+        table_progress = progress_data.get("tables", {})
+
+        # 按分类顺序组织数据
+        categories = []
+        for cat in TABLE_CATEGORIES:
+            items = []
+            for name in cat["tables"]:
+                entry = FETCHER_REGISTRY.get(name)
+                try:
+                    count = db.count(name)
+                    max_date = db.get_max_date(name)
+                except Exception:
+                    count = 0
+                    max_date = None
+
+                prog = table_progress.get(name, {})
+                items.append({
+                    "name": name,
+                    "rows": count,
+                    "max_date": max_date.isoformat() if max_date else None,
+                    "description": entry.description if entry else "",
+                    "supports_backfill": name in BACKFILL_TABLES,
+                    "last_update": prog.get("last_update"),
+                    "last_rows": prog.get("rows"),
+                    "last_elapsed": prog.get("elapsed_sec"),
+                    "last_error": prog.get("error"),
+                })
+            categories.append({
+                "name": cat["name"],
+                "icon": cat["icon"],
+                "tables": items,
             })
+
         db.close()
-        return jsonify(sorted(tables, key=lambda t: t["name"]))
+        return jsonify({"categories": categories})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -244,7 +300,7 @@ def api_query():
 
         return jsonify({
             "columns": list(df.columns),
-            "rows": df.head(1000).to_dict(orient="records"),
+            "rows": _df_to_json(df.head(1000)),
             "total": len(df),
             "elapsed": round(elapsed, 3),
         })
@@ -270,18 +326,22 @@ def api_quick_search():
         cfg = load_config(_config_path)
         db = IngestionDB(cfg.db_path)
 
-        # Verify table exists
+        # Verify table exists and get correct date column
         if table not in db.TABLES:
             db.close()
             return jsonify({"error": f"Unknown table: {table}"}), 400
 
-        sql = f"SELECT * FROM {table}{where} ORDER BY date DESC LIMIT {limit}"
+        date_col = db.TABLE_DATE_COLUMNS.get(table)
+        if date_col:
+            sql = f"SELECT * FROM {table}{where} ORDER BY {date_col} DESC LIMIT {limit}"
+        else:
+            sql = f"SELECT * FROM {table}{where} LIMIT {limit}"
         df = db.conn.execute(sql, params).fetchdf()
         db.close()
 
         return jsonify({
             "columns": list(df.columns),
-            "rows": df.to_dict(orient="records"),
+            "rows": _df_to_json(df),
             "total": len(df),
         })
     except Exception as e:
@@ -334,8 +394,63 @@ def api_source_toggle():
 
 
 # ---------------------------------------------------------------------------
+# API — 调度配置修改
+# ---------------------------------------------------------------------------
+
+
+@bp.route("/api/schedule/update", methods=["POST"])
+def api_schedule_update():
+    """更新 config.yaml 中的调度配置."""
+    try:
+        data = request.get_json(silent=True) or {}
+        entry_name = data.get("name", "").strip()
+        new_time = data.get("time", "").strip()
+
+        if not entry_name:
+            return jsonify({"error": "name is required"}), 400
+
+        # 读取当前配置
+        import yaml
+        cfg_path = Path(_config_path)
+        if not cfg_path.exists():
+            return jsonify({"error": "config.yaml not found"}), 500
+
+        with open(cfg_path, encoding="utf-8") as f:
+            config_data = yaml.safe_load(f)
+
+        if "schedule" not in config_data:
+            config_data["schedule"] = {}
+
+        if new_time:
+            config_data["schedule"][entry_name] = new_time
+        else:
+            config_data["schedule"].pop(entry_name, None)
+
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f, allow_unicode=True, default_flow_style=False)
+
+        return jsonify({"ok": True, "name": entry_name, "time": new_time or None})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
 # 工具函数
 # ---------------------------------------------------------------------------
+
+
+def _df_to_json(df: pd.DataFrame) -> list[dict]:
+    """DataFrame 转 JSON，处理 NaN/Inf 等非法 JSON 值."""
+    """DataFrame 转 JSON，处理 NaN/NaT/Inf 等非法 JSON 值。"""
+    df = df.copy()
+    # object 化后替换所有 NA 值（包括 NaN / NaT / None）
+    df = df.astype(object).where(pd.notnull(df), None)
+    # 替换 inf
+    for col in df.columns:
+        df[col] = df[col].apply(
+            lambda x: None if isinstance(x, float) and (x == float("inf") or x == float("-inf")) else x
+        )
+    return df.to_dict(orient="records")
 
 
 def _human_size(bytes_: int) -> str:

@@ -4,67 +4,94 @@
 
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h4 class="m-0">🕐 调度配置</h4>
-    <button class="btn btn-sm btn-outline-secondary" onclick="refreshSchedule()">刷新</button>
+    <div>
+        <button class="btn btn-sm btn-outline-success" onclick="showAddForm()">+ 添加</button>
+        <button class="btn btn-sm btn-outline-secondary" onclick="loadSchedule()">刷新</button>
+    </div>
 </div>
 
-<div id="schedule-panel" hx-get="/api/schedule" hx-trigger="load" hx-swap="innerHTML">
+<!-- Add / Edit form -->
+<div class="card mb-3" id="edit-form" style="display:none">
+    <div class="card-header" id="form-title">添加调度项</div>
+    <div class="card-body">
+        <div class="row g-2">
+            <div class="col-md-4">
+                <input type="text" class="form-control form-control-sm" id="edit-name" placeholder="表名或组名 (如 daily_ohlcv)">
+            </div>
+            <div class="col-md-3">
+                <input type="text" class="form-control form-control-sm" id="edit-time" placeholder="时间 (如 16:00, quarterly 10:00)">
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-sm btn-success w-100" onclick="saveSchedule()">保存</button>
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-sm btn-outline-secondary w-100" onclick="hideForm()">取消</button>
+            </div>
+            <div class="col-md-12">
+                <span class="text-secondary small">格式: <code>HH:MM</code>、<code>monthly HH:MM</code>、<code>quarterly HH:MM</code>、<code>yearly HH:MM</code></span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Schedule list -->
+<div id="schedule-panel">
     <div class="text-center py-5">
         <div class="spinner-border text-primary"></div>
     </div>
 </div>
 
+<!-- Timeline -->
+<div class="card mt-3" id="timeline-card" style="display:none">
+    <div class="card-header">每日时间线</div>
+    <div class="card-body" id="timeline-body"></div>
+</div>
+
 <script>
-function refreshSchedule() {
-    htmx.trigger('#schedule-panel', 'load');
-}
-
-document.body.addEventListener('htmx:beforeSwap', function(evt) {
-    if (evt.detail.target.id !== 'schedule-panel') return;
-    const data = evt.detail.serverResponse;
-    if (!data) return;
-
-    // Parse JSON response from htmx
-    try {
-        const json = JSON.parse(data);
-        renderSchedule(json);
-        evt.detail.shouldSwap = false;
-    } catch(e) {}
-});
-
-// Alternative: fetch via JS
-document.addEventListener('DOMContentLoaded', function() {
-    setTimeout(loadSchedule, 100);
-});
+let _scheduleData = null;
 
 function loadSchedule() {
+    const panel = document.getElementById('schedule-panel');
+    panel.innerHTML = `<div class="text-center py-3"><div class="spinner-border spinner-border-sm"></div></div>`;
+
     fetch('/api/schedule')
         .then(r => r.json())
-        .then(data => renderSchedule(data));
+        .then(data => {
+            _scheduleData = data;
+            renderSchedule(data);
+        });
 }
 
 function renderSchedule(data) {
     const panel = document.getElementById('schedule-panel');
-
     let html = '';
 
     // Schedule times
     html += `<div class="card mb-3"><div class="card-header">时间配置</div>
         <div class="card-body p-0">
             <table class="table table-sm mb-0">
-                <thead><tr><th>名称</th><th>时间</th><th>类型</th></tr></thead><tbody>`;
+                <thead><tr><th>名称</th><th>时间</th><th>类型</th><th style="width:80px">操作</th></tr></thead><tbody>`;
 
-    let times = [];
+    let entries = [];
     for (const [name, time] of Object.entries(data.schedule || {})) {
-        times.push({name, time});
-    }
-    times.sort((a, b) => a.time.localeCompare(b.time) || a.name.localeCompare(b.name));
-
-    times.forEach(({name, time}) => {
         let type = '单表';
         for (const [g, members] of Object.entries(data.groups || {})) {
             if (g === name) { type = '组'; break; }
         }
-        html += `<tr><td><code>${name}</code></td><td><span class="badge bg-primary">${time}</span></td><td>${type}</td></tr>`;
+        entries.push({name, time, type});
+    }
+    entries.sort((a, b) => a.time.localeCompare(b.time));
+
+    entries.forEach(({name, time, type}) => {
+        html += `<tr>
+            <td><code>${name}</code></td>
+            <td><span class="badge bg-primary">${time}</span></td>
+            <td>${type}</td>
+            <td>
+                <button class="btn btn-sm btn-outline-primary py-0 me-1" onclick="editEntry('${name}', '${time}')">编辑</button>
+                <button class="btn btn-sm btn-outline-danger py-0" onclick="deleteEntry('${name}')">×</button>
+            </td>
+        </tr>`;
     });
 
     html += `</tbody></table></div></div>`;
@@ -74,64 +101,107 @@ function renderSchedule(data) {
         <div class="card-body p-0">
             <table class="table table-sm mb-0">
                 <thead><tr><th>组名</th><th>包含表</th></tr></thead><tbody>`;
-
     for (const [groupName, members] of Object.entries(data.groups || {})) {
         html += `<tr><td><code>${groupName}</code></td><td class="small">`;
-        const links = members.map(m => `<code>${m}</code>`).join(', ');
-        html += links;
+        html += members.map(m => `<code>${m}</code>`).join(', ');
         html += `</td></tr>`;
     }
-
     html += `</tbody></table></div></div>`;
 
-    // Ungrouped tables
-    if (data.ungrouped && data.ungrouped.length > 0) {
-        html += `<div class="card mb-3"><div class="card-header">未归组表</div>
-            <div class="card-body">
-                <p class="small text-secondary mb-0">以下表没有在任何调度组中：</p>
-                ${data.ungrouped.map(t => `<code>${t}</code>`).join(', ')}
-            </div></div>`;
-    }
+    panel.innerHTML = html;
+    renderTimeline(data);
+}
 
-    // Timeline visualization
-    html += `<div class="card"><div class="card-header">每日时间线</div><div class="card-body">`;
-    const hours = [];
-    for (let h = 0; h < 24; h++) {
-        hours.push(`${String(h).padStart(2, '0')}:00`);
-    }
+function renderTimeline(data) {
+    const card = document.getElementById('timeline-card');
+    const body = document.getElementById('timeline-body');
+    card.style.display = 'block';
 
-    // Find all schedule times
-    const scheduleEntries = [];
+    const entries = [];
     for (const [name, timeStr] of Object.entries(data.schedule || {})) {
         const match = timeStr.match(/(\d{2}):(\d{2})/);
         if (match) {
-            const hour = parseInt(match[1]);
-            const minute = parseInt(match[2]);
-            const totalMin = hour * 60 + minute;
-            scheduleEntries.push({name, timeStr, hour, minute, totalMin});
+            entries.push({name, timeStr, hour: parseInt(match[1]), minute: parseInt(match[2])});
         }
     }
-    scheduleEntries.sort((a, b) => a.totalMin - b.totalMin);
+    entries.sort((a, b) => a.hour * 60 + a.minute - (b.hour * 60 + b.minute));
 
-    // Simple timeline as a table
-    html += `<div class="table-responsive"><table class="table table-sm mb-0">`;
-    let lastHour = -1;
-    scheduleEntries.forEach(entry => {
-        const hourLabel = `${String(entry.hour).padStart(2, '0')}:00`;
-        if (entry.hour !== lastHour) {
-            if (lastHour >= 0) html += `</tbody>`;
-            html += `<thead><tr><th colspan="2" class="small text-secondary">${hourLabel}</th></tr></thead><tbody>`;
-            lastHour = entry.hour;
+    let html = `<div class="table-responsive"><table class="table table-sm mb-0">`;
+    let currentHour = -1;
+    entries.forEach(e => {
+        if (e.hour !== currentHour) {
+            if (currentHour >= 0) html += `</tbody>`;
+            const label = `${String(e.hour).padStart(2, '0')}:00`;
+            html += `<thead class="table-dark"><tr><th colspan="2" class="small">${label}</th></tr></thead><tbody>`;
+            currentHour = e.hour;
         }
-        const indent = '  '.repeat(entry.minute / 5);
-        html += `<tr><td style="padding-left:${entry.minute}px"><span class="badge bg-info">${entry.timeStr}</span></td><td><code>${entry.name}</code></td></tr>`;
+        html += `<tr><td style="padding-left:${Math.min(e.minute, 55)}px"><span class="badge bg-info">${e.timeStr}</span></td><td><code>${e.name}</code></td></tr>`;
     });
     html += `</tbody></table></div>`;
-
-    html += `<p class="text-secondary small mt-2">配置文件：<code>config.yaml</code> → <code>schedule</code> 节</p>`;
-    html += `</div></div>`;
-
-    panel.innerHTML = html;
+    html += `<p class="text-secondary small mt-2 mb-0">配置保存在 <code>config.yaml</code> → <code>schedule</code> 节</p>`;
+    body.innerHTML = html;
 }
+
+function showAddForm() {
+    document.getElementById('edit-name').value = '';
+    document.getElementById('edit-time').value = '';
+    document.getElementById('form-title').textContent = '添 加 调 度';
+    document.getElementById('edit-form').style.display = 'block';
+    document.getElementById('edit-name').focus();
+}
+
+function editEntry(name, time) {
+    document.getElementById('edit-name').value = name;
+    document.getElementById('edit-time').value = time;
+    document.getElementById('form-title').textContent = '编 辑 调 度';
+    document.getElementById('edit-form').style.display = 'block';
+}
+
+function hideForm() {
+    document.getElementById('edit-form').style.display = 'none';
+}
+
+function saveSchedule() {
+    const name = document.getElementById('edit-name').value.trim();
+    const time = document.getElementById('edit-time').value.trim();
+    if (!name || !time) return;
+
+    fetch('/api/schedule/update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name, time}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            hideForm();
+            loadSchedule();
+        } else {
+            alert('保存失败: ' + (data.error || '未知错误'));
+        }
+    })
+    .catch(err => alert('请求失败: ' + err.message));
+}
+
+function deleteEntry(name) {
+    if (!confirm(`确定删除 "${name}" 的调度配置？`)) return;
+    // Set time to empty string to remove it
+    fetch('/api/schedule/update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name, time: ''}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            loadSchedule();
+        } else {
+            alert('删除失败: ' + (data.error || '未知错误'));
+        }
+    });
+}
+
+// Load on page load
+document.addEventListener('DOMContentLoaded', loadSchedule);
 </script>
 {% endblock %}

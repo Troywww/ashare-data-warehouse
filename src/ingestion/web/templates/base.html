@@ -78,6 +78,29 @@
         }
         setInterval(updateTime, 1000);
         updateTime();
+
+        // 全局调度器状态
+        function updateSchedulerStatus() {
+            const el = document.getElementById('scheduler-status');
+            if (!el) return;
+            fetch('/api/stats')
+                .then(r => r.json())
+                .then(data => {
+                    const p = data.progress;
+                    if (p && p.last_daily_update) {
+                        const ago = Math.floor((Date.now() - new Date(p.last_daily_update).getTime()) / 60000);
+                        const label = ago < 1 ? '刚刚' : ago < 60 ? ago + '分钟前' : Math.floor(ago / 60) + '小时前';
+                        el.innerHTML = '更新: <span class="badge bg-success">' + label + '</span>';
+                    } else {
+                        el.innerHTML = '更新: <span class="badge bg-warning text-dark">暂无</span>';
+                    }
+                })
+                .catch(() => {
+                    el.innerHTML = '调度器: <span class="badge bg-secondary">检测中...</span>';
+                });
+        }
+        document.addEventListener('DOMContentLoaded', updateSchedulerStatus);
+        setInterval(updateSchedulerStatus, 30000);
     </script>
     {% block scripts %}{% endblock %}
 </body>

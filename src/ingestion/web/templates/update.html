@@ -9,7 +9,7 @@
 <!-- All-table actions -->
 <div class="card mb-3">
     <div class="card-body">
-        <div class="row g-2">
+        <div class="row g-2 align-items-center">
             <div class="col-auto">
                 <button class="btn btn-primary" onclick="startTask('daily-update', null)">
                     全量增量更新
@@ -17,50 +17,60 @@
             </div>
             <div class="col-auto">
                 <button class="btn btn-warning" onclick="startTask('backfill', null)">
-                    全量回补
+                    全量历史回补
                 </button>
             </div>
             <div class="col-auto">
-                <button class="btn btn-outline-info" onclick="refreshStatus()">
+                <button class="btn btn-outline-info" onclick="loadTables()">
                     刷新状态
                 </button>
+            </div>
+            <div class="col-auto">
+                <span class="text-secondary small">回补仅对支持历史积累的表有效（daily_ohlcv、daily_valuation）</span>
             </div>
         </div>
     </div>
 </div>
 
-<!-- Per-table update -->
-<div class="card">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <span>单表操作</span>
-        <span class="small text-secondary">每张表可单独触发增量更新或回补</span>
-    </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-sm table-hover mb-0">
+<!-- Tables by category -->
+<div id="tables-container">
+    {% for cat in categories %}
+    <div class="card mb-3">
+        <div class="card-header py-2 d-flex justify-content-between align-items-center">
+            <span><strong>{{ cat.name }}</strong></span>
+            <span class="small text-secondary">{{ cat.tables|length }} 张表</span>
+        </div>
+        <div class="card-body p-0">
+            <table class="table table-sm table-hover mb-0" data-category="{{ cat.name }}">
                 <thead>
                     <tr>
-                        <th>表名</th>
-                        <th style="width:80px">行数</th>
-                        <th style="width:140px">最新日期</th>
+                        <th style="width:170px">表名</th>
                         <th>说明</th>
-                        <th style="width:180px">操作</th>
+                        <th style="width:80px">行数</th>
+                        <th style="width:125px">数据最新</th>
+                        <th style="width:155px">上次更新</th>
+                        <th style="width:40px"></th>
+                        <th style="width:160px">操作</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% for t in tables %}
-                    <tr id="row-{{ t }}">
-                        <td><code>{{ t }}</code></td>
-                        <td class="rows-cell" id="rows-{{ t }}">-</td>
-                        <td class="date-cell" id="date-{{ t }}">-</td>
-                        <td class="text-secondary small desc-cell" id="desc-{{ t }}">-</td>
+                    {% for t in cat.tables %}
+                    <tr id="row-{{ t.name }}">
+                        <td><code>{{ t.name }}</code></td>
+                        <td class="small text-secondary">{{ t.description }}</td>
+                        <td class="rows-cell" id="rows-{{ t.name }}">-</td>
+                        <td class="date-cell small" id="date-{{ t.name }}">-</td>
+                        <td class="update-cell small text-secondary" id="update-{{ t.name }}">-</td>
+                        <td id="status-{{ t.name }}">-</td>
                         <td>
-                            <button class="btn btn-sm btn-outline-primary me-1" onclick="startTask('daily-update', '{{ t }}')">
+                            <button class="btn btn-sm btn-outline-primary py-0 me-1" onclick="startTask('daily-update', '{{ t.name }}')">
                                 增量
                             </button>
-                            <button class="btn btn-sm btn-outline-warning" onclick="startTask('backfill', '{{ t }}')">
+                            {% if t.supports_backfill %}
+                            <button class="btn btn-sm btn-outline-warning py-0" onclick="startTask('backfill', '{{ t.name }}')">
                                 回补
                             </button>
+                            {% endif %}
                         </td>
                     </tr>
                     {% endfor %}
@@ -68,6 +78,7 @@
             </table>
         </div>
     </div>
+    {% endfor %}
 </div>
 
 <!-- Task progress -->
@@ -78,11 +89,12 @@
 
 <!-- Recent tasks -->
 <div class="card mt-3">
-    <div class="card-header">最近任务</div>
+    <div class="card-header d-flex justify-content-between">
+        <span>最近任务</span>
+        <span class="small text-secondary">自动刷新</span>
+    </div>
     <div class="card-body p-0" id="recent-tasks">
-        <div class="text-center text-secondary py-3" hx-get="/api/tasks" hx-trigger="load every:5s" hx-swap="innerHTML">
-            加载中...
-        </div>
+        <div class="text-center text-secondary py-3">加载中...</div>
     </div>
 </div>
 
@@ -119,15 +131,14 @@ function pollTask(taskId) {
                 if (task.status === 'running' || task.status === 'pending') {
                     el.innerHTML = `<div class="d-flex align-items-center">
                         <div class="spinner-border spinner-border-sm me-2"></div>
-                        <span>运行中... (${task.progress || ''})</span>
+                        <span>运行中...</span>
                     </div>`;
                 } else if (task.status === 'done') {
                     clearInterval(poll);
                     let html = `<div class="alert alert-success mb-0">
                         <strong>完成</strong> — ${task.ok} 个成功`;
                     if (task.failed > 0) html += `, ${task.failed} 个失败`;
-                    html += `，共 ${task.rows} 行`;
-                    html += `</div>`;
+                    html += `，共 ${task.rows} 行</div>`;
                     if (task.results) {
                         html += `<table class="table table-sm mt-2 mb-0">
                             <tr><th>名称</th><th>行数</th><th>耗时</th><th>状态</th></tr>`;
@@ -141,7 +152,7 @@ function pollTask(taskId) {
                     }
                     el.innerHTML = html;
                     setTimeout(() => panel.style.display = 'none', 30000);
-                    refreshStatus();
+                    loadTables();
                 } else if (task.status === 'error') {
                     clearInterval(poll);
                     el.innerHTML = `<div class="alert alert-danger mb-0">错误: ${task.error}</div>`;
@@ -150,22 +161,64 @@ function pollTask(taskId) {
     }, 1000);
 }
 
-function refreshStatus() {
+function loadTables() {
     fetch('/api/tables')
         .then(r => r.json())
-        .then(tables => {
-            tables.forEach(t => {
-                const rowEl = document.getElementById(`rows-${t.name}`);
-                if (rowEl) rowEl.textContent = t.rows.toLocaleString();
-                const dateEl = document.getElementById(`date-${t.name}`);
-                if (dateEl) dateEl.textContent = t.max_date || '-';
-                const descEl = document.getElementById(`desc-${t.name}`);
-                if (descEl) descEl.textContent = t.description;
+        .then(data => {
+            if (data.error) return;
+            data.categories.forEach(cat => {
+                cat.tables.forEach(t => {
+                    const rowEl = document.getElementById(`rows-${t.name}`);
+                    if (rowEl) rowEl.textContent = t.rows.toLocaleString();
+
+                    const dateEl = document.getElementById(`date-${t.name}`);
+                    if (dateEl) dateEl.textContent = t.max_date || '-';
+
+                    const updateEl = document.getElementById(`update-${t.name}`);
+                    if (updateEl) updateEl.textContent = t.last_update || '-';
+
+                    const statusEl = document.getElementById(`status-${t.name}`);
+                    if (statusEl) {
+                        if (t.last_error) {
+                            statusEl.innerHTML = `<span class="text-danger" title="${t.last_error}">✗</span>`;
+                        } else if (t.last_update) {
+                            statusEl.innerHTML = `<span class="text-success">✓</span>`;
+                        } else {
+                            statusEl.innerHTML = `<span class="text-secondary">-</span>`;
+                        }
+                    }
+                });
             });
         });
 }
 
-// Load table status on page load
-refreshStatus();
+function loadRecentTasks() {
+    fetch('/api/tasks')
+        .then(r => r.json())
+        .then(tasks => {
+            const el = document.getElementById('recent-tasks');
+            if (!el) return;
+            if (!tasks || tasks.length === 0) {
+                el.innerHTML = '<div class="text-center text-secondary py-3">暂无任务记录</div>';
+                return;
+            }
+            let html = '<table class="table table-sm mb-0"><thead><tr><th>#</th><th>类型</th><th>表</th><th>结果</th><th>行数</th></tr></thead><tbody>';
+            tasks.slice(0, 20).forEach(t => {
+                const icon = t.status === 'done' ? (t.failed > 0 ? '⚠' : '✓') : t.status === 'error' ? '✗' : '⟳';
+                const cls = t.status === 'done' ? (t.failed > 0 ? 'text-warning' : 'text-success') : t.status === 'error' ? 'text-danger' : '';
+                html += `<tr><td class="small text-secondary">${t.id?.replace('task_', '') || '-'}</td>
+                    <td>${t.backfill ? '<span class="badge bg-warning">回补</span>' : '<span class="badge bg-primary">增量</span>'}</td>
+                    <td class="small">${Array.isArray(t.tables) ? t.tables.join(', ') : t.tables || '-'}</td>
+                    <td class="${cls}">${icon} ${t.error || ''}</td>
+                    <td>${t.rows?.toLocaleString() || 0}</td></tr>`;
+            });
+            html += '</tbody></table>';
+            el.innerHTML = html;
+        });
+}
+
+// Load on page load and auto-refresh
+document.addEventListener('DOMContentLoaded', () => { loadTables(); loadRecentTasks(); });
+setInterval(loadRecentTasks, 10000);
 </script>
 {% endblock %}

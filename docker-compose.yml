@@ -54,7 +54,7 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
+      - ./config.yaml:/app/config.yaml
       - ../data/ingestion:/app/data/ingestion
     environment:
       - INGESTION_DB_PATH=/app/data/ingestion/stock_research.duckdb
