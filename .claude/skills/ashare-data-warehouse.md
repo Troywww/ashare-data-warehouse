@@ -1,6 +1,6 @@
 ---
 name: ashare-data-warehouse
-description: A 股数据仓库 — 查询本地 DuckDB 数据库、管理数据更新、在线获取新闻研报等实时数据
+description: A 股数据 — 查询本地 DuckDB 数据库 / 通过 akshare 和 HTTP 在线获取 / 管理项目部署
 metadata:
   type: skill
   project: ashare-data-warehouse
@@ -8,57 +8,185 @@ metadata:
 
 # A 股数据仓库 — Agent 使用指南
 
-本项目提供 A 股全市场（沪/深/北）结构化数据，包含 **19 张表**（行情、估值、资金、信号、财务、外围），以及在线实时数据接口（新闻、研报、公告、快讯）。
+提供两种工作模式，Agent 可按需选择：
+
+| 模式 | 说明 | 适合场景 |
+|------|------|---------|
+| **🌐 纯在线** | 通过 akshare + HTTP API 在线获取所有数据 | 快速问答、单次分析，无需部署 |
+| **💾 本地部署** | 部署项目到本地，查询 DuckDB（性能更好，支持历史回溯） | 高频分析、回测、大数据量查询 |
 
 ---
 
-## 1. 数据库查询
+## 一、🌐 纯在线模式
 
-### 连接
+所有数据通过 akshare 或 HTTP API 在线获取，不需要部署项目。
+
+### 行情 K 线
+
+```python
+import akshare as ak
+
+# A 股日 K 线（前复权），默认返回近一年
+df = ak.stock_zh_a_hist(symbol="600519", period="daily",
+                         start_date="20250101", end_date="20260524",
+                         adjust="qfq")
+# 列: 日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 振幅, 涨跌幅, 涨跌额, 换手率
+```
+
+### 估值数据
+
+```python
+import requests
+
+# 腾讯行情接口，批量最多 80 只
+resp = requests.get("https://qt.gtimg.cn/q=sh600519,sz000001,sz300750")
+# 返回 PE_TTM, PB, 总市值, 流通市值, 换手率等
+for line in resp.text.strip().split(";"):
+    if line:
+        fields = line.split("~")
+        name, code, pe, pb, total_mv = fields[1], fields[2], fields[39], fields[46], fields[45]
+```
+
+### 股票列表
+
+```python
+df = ak.stock_info_a_code_name()  # 全市场 ~6000 只代码+名称
+```
+
+### 行业分类
+
+```python
+# 行业板块成分股
+df = ak.stock_board_industry_cons_em(symbol="半导体")
+```
+
+### 概念板块
+
+```python
+df = ak.stock_board_concept_cons_em(symbol="人工智能")
+```
+
+### 资金流向
+
+```python
+# 个股资金流向（最近 100 个交易日）
+df = ak.stock_individual_fund_flow(stock="600519", market="sh")
+# 列: 日期, 主力净流入, 小单净流入, 中单净流入, 大单净流入, 超大单净流入
+```
+
+### 北向资金
+
+```python
+df = ak.stock_hsgt_fund_flow_summary_em(symbol="北上")
+# 或按日查询
+df = ak.stock_hsgt_north_net_flow_in_em(symbol="沪股通")
+```
+
+### 融资融券
+
+```python
+df = ak.stock_margin_detail_sse(date="20260522")
+df = ak.stock_margin_detail_szse()
+```
+
+### 龙虎榜
+
+```python
+df = ak.stock_lhb_detail_em(start_date="20260501", end_date="20260524")
+```
+
+### 板块涨跌排名
+
+```python
+df_industry = ak.stock_board_industry_name_em()    # 行业板块排名
+df_concept = ak.stock_board_concept_name_em()      # 概念板块排名
+```
+
+### 季度财务
+
+```python
+df = ak.stock_yjbb_em(date="2025-12-31")  # 全市场季度财报
+# 列: 股票代码, 营业收入, 净利润, 每股收益, ROE, 毛利率, 营收同比, 净利同比
+```
+
+### 市场热度
+
+```python
+df = ak.stock_hot_follow_xq()  # 雪球关注热度排名
+```
+
+### 交易日历
+
+```python
+df = ak.tool_trade_date_hist_sina()  # 全市场交易日历
+```
+
+### 外围指数
+
+```python
+import requests, json, re
+
+# 东方财富全球指数行情
+url = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+params = {"secids": "1.000001,100.DJIA,100.NDX,100.HSI,100.N225,101.GC00Y,102.CL00Y",
+          "fields": "f2,f3,f4,f12,f14", "fltt": 2}
+resp = requests.get(url, params=params)
+data = json.loads(re.search(r"\{.*\}", resp.text).group())
+for item in data["data"]["diff"]:
+    print(f"{item['f14']}: {item['f2']} ({item['f3']}%)")
+```
+
+---
+
+## 二、💾 本地部署模式
+
+### 连接数据库
 
 ```python
 from src.ingestion.db import IngestionDB
-db = IngestionDB()  # 默认路径: ./data/ingestion/stock_research.duckdb
+db = IngestionDB()
 df = db.conn.execute("SELECT COUNT(*) FROM daily_ohlcv").fetchdf()
 ```
 
-### 19 张表概览
+### 初始化 / 更新数据
+
+```bash
+# 检查状态
+python -m src.ingestion status
+
+# 首次全量建库
+ingestion backfill
+
+# 每日增量更新
+ingestion daily-update
+
+# 指定表更新
+ingestion daily-update -t daily_ohlcv,global_markets
+```
+
+### 19 张表与常用查询
 
 | 层级 | 表名 | 用途 |
 |------|------|------|
 | **基础** | `trade_calendar` | 交易日历 |
-| | `stock_universe` | 全品种索引（~6000 只） |
+| | `stock_universe` | 全品种索引 |
 | | `stock_classification` | 行业 + 地域分类 |
 | | `concept_blocks` | 概念板块映射 |
-| **行情** | `daily_ohlcv` | **核心** — 日 K 线（前复权 QFQ） |
-| | `daily_valuation` | 每日估值（PE/PB/PS/PCF/市值） |
+| **行情** | `daily_ohlcv` | **核心** — 日 K 线（前复权） |
+| | `daily_valuation` | PE/PB/PS/PCF/市值 |
 | | `xdxr_events` | 除权除息事件 |
-| **资金** | `capital_flow` | 主力净流入、分单流向 |
-| | `northbound_flow` | 北向资金每日汇总 |
+| **资金** | `capital_flow` | 主力净流入 |
+| | `northbound_flow` | 北向资金 |
 | | `margin_trading` | 融资融券余额 |
-| **信号** | `dragon_tiger` | 龙虎榜明细（含上榜后 1/2/5/10 日表现） |
-| | `board_daily` | 板块每日涨跌排名、领涨股 |
-| | `hot_stocks` | 雪球关注热度排名 |
-| | `hot_reasons` | 同花顺题材归因标签 |
-| | `block_trades` | 大宗交易（含买卖营业部） |
-| | `lockup_calendar` | 限售解禁日历（含未来 90 天） |
-| **财务** | `fundamentals` | 季度财报（EPS/ROE/营收/利润/毛利率） |
-| | `holder_count` | 股东户数（季度环比） |
-| **外围** | `global_markets` | 美股/港股/黄金/原油/外汇日 K 线 |
-
-### 常用查询模板
-
-#### 个股行情
-
-```sql
--- 个股日 K 线 + 涨跌幅 + 换手率
-SELECT date, open, high, low, close, volume, amount, pct_chg, turnover_rate
-FROM daily_ohlcv
-WHERE symbol = '600519'
-ORDER BY date DESC LIMIT 120;
-```
-
-#### 行情 + 估值关联
+| **信号** | `dragon_tiger` | 龙虎榜（含上榜后表现） |
+| | `board_daily` | 板块排名 + 领涨股 |
+| | `hot_stocks` | 雪球热度排名 |
+| | `hot_reasons` | 题材归因标签 |
+| | `block_trades` | 大宗交易 |
+| | `lockup_calendar` | 限售解禁日历 |
+| **财务** | `fundamentals` | 季度财报 |
+| | `holder_count` | 股东户数 |
+| **外围** | `global_markets` | 外围指数日 K 线 |
 
 ```sql
 -- 个股行情 + 估值
@@ -67,124 +195,45 @@ FROM daily_ohlcv a
 LEFT JOIN daily_valuation b ON a.symbol = b.symbol AND a.date = b.date
 WHERE a.symbol = '600519'
 ORDER BY a.date DESC LIMIT 60;
-```
 
-#### 行业板块成分股
-
-```sql
--- 查询某行业的所有股票
-SELECT u.symbol, u.name, c.industry, c.region
-FROM stock_universe u
-JOIN stock_classification c ON u.symbol = c.symbol
-WHERE c.industry LIKE '%半导体%';
-```
-
-#### 北向资金
-
-```sql
--- 北向资金最近 N 日趋势
+-- 北向资金趋势
 SELECT trade_date, market, net_buy
 FROM northbound_flow
 ORDER BY trade_date DESC LIMIT 30;
-```
 
-#### 龙虎榜 + 上榜后表现
-
-```sql
--- 查询某日龙虎榜 + 上榜后表现
+-- 龙虎榜上榜后表现
 SELECT symbol, reason, net_buy, total_amount, perf_1d, perf_2d, perf_5d
 FROM dragon_tiger
 WHERE date = '2026-05-22'
 ORDER BY net_buy DESC;
-```
 
-#### 概念板块关联
-
-```sql
--- 查询某个概念下的所有股票
+-- 概念板块成分股
 SELECT u.symbol, u.name, cb.concept_name
 FROM stock_universe u
 JOIN concept_blocks cb ON u.symbol = cb.symbol
 WHERE cb.concept_name LIKE '%人工智能%';
-```
 
-#### 异常检测查询
-
-```sql
--- 估值异常: 当前 PE 处于近 5 年高分位
-WITH pe_stats AS (
-  SELECT symbol,
-    PERCENT_RANK() OVER (PARTITION BY symbol ORDER BY pe_ttm) as pe_percentile
-  FROM daily_valuation
-  WHERE date >= (SELECT MAX(date) - INTERVAL '5 years' FROM daily_valuation)
-)
-SELECT DISTINCT v.symbol, u.name, v.pe_ttm, v.total_mv, s.pe_percentile
+-- 低估值 + 资金流入筛选
+SELECT v.symbol, u.name, v.pe_ttm, v.pb, c.net_main, f.roe
 FROM daily_valuation v
-JOIN pe_stats s ON v.symbol = s.symbol
 JOIN stock_universe u ON v.symbol = u.symbol
+LEFT JOIN capital_flow c ON v.symbol = c.symbol AND v.date = c.date
+LEFT JOIN fundamentals f ON v.symbol = f.symbol
 WHERE v.date = (SELECT MAX(date) FROM daily_valuation)
-  AND v.pe_ttm > 0
-  AND s.pe_percentile > 0.9
-ORDER BY s.pe_percentile DESC LIMIT 20;
+  AND v.pe_ttm BETWEEN 10 AND 30
+  AND v.pb < 3
+  AND c.net_main > 0
+ORDER BY c.net_main DESC LIMIT 20;
 ```
 
 ---
 
-## 2. 数据初始化与更新
+## 三、🌐 在线实时数据（仅在线获取，不落库）
 
-如果数据库不存在或需要更新，按以下步骤操作：
-
-### 检查状态
-
-```bash
-# 查看各表数据行数 / 检查是否已初始化
-cd /path/to/ashare-data-warehouse
-python -m src.ingestion status
-```
-
-### 首次部署（初始化全量数据）
-
-```bash
-docker compose up -d                              # 启动调度器
-docker compose exec ingestion backfill            # 拉取全量历史数据（耗时较长）
-```
-
-或本地运行：
-
-```bash
-cd /path/to/ashare-data-warehouse
-pip install -r requirements.txt
-pip install -e .
-ingestion backfill                                 # 全量回补
-```
-
-### 每日增量更新
-
-```bash
-ingestion daily-update                             # 全量增量
-ingestion daily-update -t daily_ohlcv,global_markets  # 单表增量
-```
-
-### 依赖与注意事项
-
-- **opentdx** — 主数据源，wheel 已在 `wheels/` 目录中（GitHub 源已删）
-- **网络要求** — 需要访问通达信 TCP 服务器（7709 端口）、东方财富 HTTP API 等
-- **首次全量回补** — 根据网络情况可能需要 30 分钟到数小时
-- **磁盘空间** — DuckDB 约 1.2 GB，随数据增长会缓慢增加
-
----
-
-## 3. 在线数据接口（应用层按需拉取）
-
-以下数据**不存储在 DuckDB 中**，应用层按需通过 HTTP 或 akshare 获取。
-
-### 研报列表 (`research_reports`)
-
-获取个股研究报告。
+### 个股研报
 
 ```python
 import requests, json
-
 url = "https://reportapi.eastmoney.com/report/list"
 params = {"code": "600519", "pageNo": 1, "pageSize": 20, "qType": 0}
 resp = requests.get(url, params=params)
@@ -194,101 +243,81 @@ for r in data["data"]:
     print(r["publishDate"], r["orgSName"], r["emRatingName"], r["title"])
 ```
 
-### 个股新闻 (`stock_news`)
+### 个股新闻
 
 ```python
-import akshare as ak
-df = ak.stock_news_em(stock="600519")
-# 返回列: code, title, content, public_time, url
+df = ak.stock_news_em(stock="600519")  # 当日最新 20 条
 ```
 
-### 三张财报 (`financial_reports`)
+### 三张财报
 
 ```python
-import akshare as ak
-df = ak.stock_financial_report_sina(stock="sh600519", symbol="利润表")
-# symbol 可选: "资产负债表" / "利润表" / "现金流量表"
+df_profit = ak.stock_financial_report_sina(stock="sh600519", symbol="利润表")
+df_balance = ak.stock_financial_report_sina(stock="sh600519", symbol="资产负债表")
+df_cash = ak.stock_financial_report_sina(stock="sh600519", symbol="现金流量表")
 ```
 
-### 上市公司公告 (`cninfo_filings`)
+### 上市公司公告
 
 ```python
 import requests
 url = "http://www.cninfo.com.cn/new/hisAnnouncement/query"
-data = {
-    "pageNum": "1", "pageSize": "30", "column": "szse",
-    "stock": "000001", "category": "category_ndbg_szsh",
-    "seDate": "2025-01-01~2025-12-31",
-}
-headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/x-www-form-urlencoded"}
-resp = requests.post(url, data=data, headers=headers)
+data = {"pageNum": "1", "pageSize": "30", "column": "szse",
+        "stock": "000001", "category": "category_ndbg_szsh",
+        "seDate": "2025-01-01~2025-12-31"}
+resp = requests.post(url, json=data, headers={"User-Agent": "Mozilla/5.0"})
 for item in resp.json()["announcements"]:
     print(item["secCode"], item["announcementTitle"],
           f"http://static.cninfo.com.cn/{item['adjunctUrl']}")
 ```
 
-### 财联社实时电报 (`cls_news`)
+### 财联社实时电报
 
 ```python
 import requests, time, hashlib
 url = "https://www.cls.cn/v1/roll/get_roll_list"
-ts = int(time.time())
-payload = {"app": "CailianpressWeb", "os": "web", "rn": 50, "last_time": ts}
-# 签名: 按参数排序拼接 → SHA256 → MD5
+payload = {"app": "CailianpressWeb", "os": "web", "rn": 50, "last_time": int(time.time())}
 raw = f"app={payload['app']}&last_time={payload['last_time']}&os={payload['os']}&rn={payload['rn']}"
 payload["sign"] = hashlib.md5(hashlib.sha256(raw.encode()).hexdigest().encode()).hexdigest()
 resp = requests.post(url, json=payload, headers={"User-Agent": "Mozilla/5.0"})
 for item in resp.json().get("data", {}).get("roll_data", [])[:10]:
-    print(item["title"])
+    print(item["title"], item["ctime"])
 ```
 
-### 全球指数行情 (`global_news`)
+---
+
+## 四、典型分析场景
+
+### 智能选股助手
 
 ```python
-import requests, json, re
-url = "https://push2.eastmoney.com/api/qt/ulist.np/get"
-params = {
-    "secids": "1.000001,100.DJIA,100.NDX,100.HSI,100.N225,101.GC00Y,102.CL00Y",
-    "fields": "f2,f3,f4,f12,f14", "fltt": 2,
-}
-resp = requests.get(url, params=params)
-data = json.loads(re.search(r"\{.*\}", resp.text).group())
-for item in data["data"]["diff"]:
-    print(f"{item['f14']}: {item['f2']} ({item['f3']}%)")
+# 在线方式：akshare 筛选
+df = ak.stock_yjbb_em(date="2025-12-31")
+# ROE > 15%, 营收增长 > 20%, 毛利率 > 30%
+candidates = df[(df['净资产收益率'] > 15) & (df['营收同比增长'] > 20) & (df['销售毛利率'] > 30)]
 ```
 
----
+### 每日复盘简报
 
-## 4. 典型分析场景
+1. 查 `ak.stock_board_industry_name_em()` — 板块排名
+2. 查 `ak.stock_lhb_detail_em()` — 龙虎榜
+3. 查 `ak.stock_hsgt_fund_flow_summary_em()` — 北向资金
+4. 查财联社电报 — 当日重大快讯
 
-### 场景 A：回答用户关于某只股票的问题
+### 个股全面分析
 
-1. 先检查本地 DB 是否可用：看 `data/ingestion/stock_research.duckdb` 是否存在
-2. 如果存在，用 SQL 查 `daily_ohlcv` + `daily_valuation` + `capital_flow` 等表
-3. 如果需要最新新闻/研报，调用在线接口补充
-4. 如果需要财务数据（非基本面摘要），调用 `stock_financial_report_sina`
-
-### 场景 B：生成每日复盘
-
-1. 确保 DB 有最新数据（如果数据较旧，先跑 `ingestion daily-update`）
-2. 查询 `board_daily`（板块排名）、`dragon_tiger`（龙虎榜）、`northbound_flow`（北向资金）
-3. 结合在线 `cls_news`（当日快讯）做综合解读
-
-### 场景 C：选股筛选
-
-1. 用 SQL 做多表 JOIN 筛选：
-   - `daily_valuation` → 低 PE、低 PB
-   - `capital_flow` → 主力净流入
-   - `holder_count` → 筹码集中
-   - `fundamentals` → ROE > 15%
-2. 在线查 `research_reports` 验证机构覆盖情况
-3. 在线查 `stock_news` 看近期是否有负面新闻
+1. `stock_zh_a_hist` — K 线走势
+2. `stock_financial_report_sina` — 三张财报
+3. `stock_individual_fund_flow` — 资金流向
+4. `stock_news_em` — 最新新闻
+5. `reportapi.eastmoney.com` — 机构研报
+6. `cninfo` — 最新公告
 
 ---
 
-## 5. 注意事项
+## 五、注意事项
 
-- **DB 查询只读**：Agent 只应执行 SELECT 查询，不要写/改表结构
-- **数据延迟**：行情数据通常 16:00 后更新（A 股收盘后），外围数据 09:00 前更新
-- **在线接口频率**：财联社、巨潮资讯有反爬机制，不要高频请求
-- **opentdx 限流**：回补 K 线时并发 ≤ 3，首次全量建库可能需要等待
+- **在线接口频率**：akshare 和东方财富 API 有频率限制，避免高频循环请求
+- **数据延迟**：行情数据需等 A 股收盘后（约 16:00）才完整
+- **本地部署优势**：适合大量股票的历史数据回测，在线模式适合单只股票的快速查询
+- **opentdx**：如果部署本地项目，wheel 在 `wheels/` 目录中（GitHub 源已删）
