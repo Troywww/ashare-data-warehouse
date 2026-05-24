@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}A股数据仓库{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <style>
+        body { font-size: .875rem; }
+        .sidebar { position: fixed; top: 0; left: 0; height: 100vh; width: 200px; padding-top: 56px; overflow-y: auto; }
+        .main { margin-left: 200px; padding-top: 56px; }
+        .navbar-brand { font-weight: 600; letter-spacing: -.5px; }
+        .stat-card { transition: opacity .3s; }
+        .stat-card .number { font-size: 1.5rem; font-weight: 700; }
+        .table-responsive { max-height: 70vh; overflow-y: auto; }
+        .badge-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        pre { max-height: 400px; overflow: auto; }
+        .task-row { border-left: 3px solid transparent; }
+        .task-row.running { border-left-color: #0d6efd; }
+        .task-row.done { border-left-color: #198754; }
+        .task-row.error { border-left-color: #dc3545; }
+    </style>
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-dark bg-dark fixed-top">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">📊 A股数据仓库</a>
+            <span class="text-secondary small me-3" id="nav-time"></span>
+        </div>
+    </nav>
+
+    <!-- Sidebar -->
+    <div class="sidebar bg-dark border-end border-secondary">
+        <ul class="nav flex-column">
+            <li class="nav-item">
+                <a class="nav-link text-white {% if request.path == '/' %}active fw-bold{% endif %}" href="/">
+                    📋 仪表盘
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link text-white {% if request.path == '/update' %}active fw-bold{% endif %}" href="/update">
+                    ⚡ 数据管理
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link text-white {% if request.path == '/search' %}active fw-bold{% endif %}" href="/search">
+                    🔍 数据搜索
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link text-white {% if request.path == '/schedule' %}active fw-bold{% endif %}" href="/schedule">
+                    🕐 调度配置
+                </a>
+            </li>
+            <li class="nav-item mt-3">
+                <span class="nav-link small text-secondary" id="scheduler-status">
+                    调度器: <span class="badge bg-secondary">检测中...</span>
+                </span>
+            </li>
+        </ul>
+    </div>
+
+    <!-- Main -->
+    <div class="main">
+        <div class="container-fluid p-3">
+            {% block content %}{% endblock %}
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // 更新时间
+        function updateTime() {
+            const el = document.getElementById('nav-time');
+            if (el) el.textContent = new Date().toLocaleString('zh-CN');
+        }
+        setInterval(updateTime, 1000);
+        updateTime();
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

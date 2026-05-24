@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}仪表盘 — A股数据仓库{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="m-0">📋 仪表盘</h4>
+    <button class="btn btn-sm btn-outline-secondary" onclick="loadStats()">刷新</button>
+</div>
+
+<div id="stats-panel">
+    <div class="text-center py-5">
+        <div class="spinner-border text-primary" role="status"></div>
+        <p class="mt-2 text-secondary">加载中...</p>
+    </div>
+</div>
+
+<script>
+function loadStats() {
+    const panel = document.getElementById('stats-panel');
+    panel.innerHTML = `<div class="text-center py-3"><div class="spinner-border spinner-border-sm"></div></div>`;
+
+    fetch('/api/stats')
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                panel.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                return;
+            }
+
+            // Summary cards
+            let html = `<div class="row g-2 mb-3">`;
+            const cards = [
+                {label: '总行数', value: (data.total_rows || 0).toLocaleString(), color: 'primary'},
+                {label: '数据表', value: data.table_count || 0, color: 'success'},
+                {label: '数据库大小', value: data.db_size_human || '-', color: 'info'},
+            ];
+            cards.forEach(c => {
+                html += `<div class="col-md-4"><div class="card stat-card border-${c.color}">
+                    <div class="card-body py-2">
+                        <div class="small text-secondary">${c.label}</div>
+                        <div class="number text-${c.color}">${c.value}</div>
+                    </div>
+                </div></div>`;
+            });
+            html += `</div>`;
+
+            // Last update
+            if (data.progress && data.progress.last_daily_update) {
+                html += `<div class="alert alert-info py-2 mb-3">
+                    最近更新: <strong>${data.progress.last_daily_update}</strong>`;
+                if (data.progress.errors && data.progress.errors.length > 0) {
+                    html += ` &nbsp;|&nbsp; <span class="text-warning">⚠ ${data.progress.errors.length} 个错误</span>`;
+                }
+                html += `</div>`;
+            } else {
+                html += `<div class="alert alert-warning py-2 mb-3">暂无更新记录，请先运行数据更新</div>`;
+            }
+
+            // Table stats
+            html += `<div class="card"><div class="card-header py-2">各表行数</div>
+                <div class="table-responsive"><table class="table table-sm table-hover mb-0">
+                    <thead><tr><th>表名</th><th style="width:120px">行数</th><th style="width:140px">最新日期</th><th>说明</th></tr></thead><tbody>`;
+
+            if (data.rows) {
+                const sorted = Object.entries(data.rows).sort((a, b) => a[0].localeCompare(b[0]));
+                sorted.forEach(([name, count]) => {
+                    const maxDate = data.max_dates?.[name] || '-';
+                    html += `<tr>
+                        <td><code>${name}</code></td>
+                        <td>${count.toLocaleString()}</td>
+                        <td class="small">${maxDate}</td>
+                        <td class="small text-secondary">-</td>
+                    </tr>`;
+                });
+            }
+
+            html += `</tbody></table></div></div>`;
+
+            // Recent errors
+            if (data.progress && data.progress.errors && data.progress.errors.length > 0) {
+                html += `<div class="card mt-3"><div class="card-header py-2 text-warning">最近错误</div>
+                    <div class="table-responsive"><table class="table table-sm mb-0">
+                        <thead><tr><th>时间</th><th>表</th><th>错误</th></tr></thead><tbody>`;
+                data.progress.errors.slice(-10).forEach(err => {
+                    html += `<tr><td class="small">${err.time || '-'}</td>
+                        <td><code>${err.table || '-'}</code></td>
+                        <td class="text-danger small">${err.error || '-'}</td></tr>`;
+                });
+                html += `</tbody></table></div></div>`;
+            }
+
+            panel.innerHTML = html;
+            updateSidebarStatus(data.progress);
+        })
+        .catch(err => {
+            panel.innerHTML = `<div class="alert alert-danger">加载失败: ${err.message}</div>`;
+        });
+}
+
+function updateSidebarStatus(progress) {
+    const el = document.getElementById('scheduler-status');
+    if (!el) return;
+    if (progress && progress.last_daily_update) {
+        const ago = Math.floor((Date.now() - new Date(progress.last_daily_update).getTime()) / 60000);
+        const label = ago < 1 ? '刚刚' : ago < 60 ? `${ago}分钟前` : `${Math.floor(ago/60)}小时前`;
+        el.innerHTML = `更新: <span class="badge bg-success">${label}</span>`;
+    } else {
+        el.innerHTML = `更新: <span class="badge bg-warning">暂无</span>`;
+    }
+}
+
+// Auto load on page load
+document.addEventListener('DOMContentLoaded', loadStats);
+// Auto refresh every 60s
+setInterval(loadStats, 60000);
+</script>
+{% endblock %}

@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}数据搜索 — A股数据仓库{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="m-0">🔍 数据搜索</h4>
+</div>
+
+<!-- Quick Search -->
+<div class="card mb-3">
+    <div class="card-header">快速查询</div>
+    <div class="card-body">
+        <div class="row g-2">
+            <div class="col-md-3">
+                <select class="form-select form-select-sm" id="q-table">
+                    <option value="daily_ohlcv">daily_ohlcv — 日K线</option>
+                    <option value="daily_valuation">daily_valuation — 估值</option>
+                    <option value="capital_flow">capital_flow — 资金流向</option>
+                    <option value="dragon_tiger">dragon_tiger — 龙虎榜</option>
+                    <option value="margin_trading">margin_trading — 融资融券</option>
+                    <option value="fundamentals">fundamentals — 财务数据</option>
+                    <option value="northbound_flow">northbound_flow — 北向资金</option>
+                    <option value="board_daily">board_daily — 板块涨跌</option>
+                    <option value="hot_stocks">hot_stocks — 热度排名</option>
+                    <option value="block_trades">block_trades — 大宗交易</option>
+                    <option value="holder_count">holder_count — 股东户数</option>
+                    <option value="lockup_calendar">lockup_calendar — 解禁日历</option>
+                    <option value="global_markets">global_markets — 外围行情</option>
+                    <option value="stock_universe">stock_universe — 股票列表</option>
+                    <option value="stock_classification">stock_classification — 行业分类</option>
+                    <option value="concept_blocks">concept_blocks — 概念板块</option>
+                    <option value="xdxr_events">xdxr_events — 除权除息</option>
+                    <option value="trade_calendar">trade_calendar — 交易日历</option>
+                    <option value="hot_reasons">hot_reasons — 题材归因</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <input type="text" class="form-control form-control-sm" id="q-symbol" placeholder="股票代码 (如 600519, 留空=全部)">
+            </div>
+            <div class="col-md-2">
+                <input type="number" class="form-control form-control-sm" id="q-limit" value="100" min="1" max="1000">
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-sm btn-primary w-100" onclick="quickSearch()">查询</button>
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-sm btn-outline-secondary w-100" onclick="exportCSV()">导出 CSV</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- SQL Query -->
+<div class="card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>SQL 查询 <small class="text-secondary">（仅支持 SELECT）</small></span>
+        <button class="btn btn-sm btn-outline-info" onclick="loadExampleSql()">示例</button>
+    </div>
+    <div class="card-body">
+        <div class="mb-2">
+            <textarea class="form-control form-control-sm font-monospace" id="sql-input" rows="3" placeholder="输入 SELECT 语句..."></textarea>
+        </div>
+        <button class="btn btn-sm btn-primary" onclick="runSql()">执行</button>
+        <span class="text-secondary small ms-2" id="sql-status"></span>
+    </div>
+</div>
+
+<!-- Results -->
+<div id="results-panel"></div>
+
+<script>
+let _lastResult = null;
+
+function quickSearch() {
+    const table = document.getElementById('q-table').value;
+    const symbol = document.getElementById('q-symbol').value;
+    const limit = document.getElementById('q-limit').value || 100;
+
+    fetch('/api/quick-search', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({table, symbol, limit}),
+    })
+    .then(r => r.json())
+    .then(data => displayResults(data))
+    .catch(err => showError(err));
+}
+
+function runSql() {
+    const sql = document.getElementById('sql-input').value.trim();
+    if (!sql) return;
+
+    const status = document.getElementById('sql-status');
+    status.textContent = '执行中...';
+
+    fetch('/api/query', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sql}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        status.textContent = `${data.total} 行, ${data.elapsed}s`;
+        displayResults(data);
+    })
+    .catch(err => showError(err));
+}
+
+function displayResults(data) {
+    _lastResult = data;
+    const panel = document.getElementById('results-panel');
+
+    if (data.error) {
+        panel.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+        return;
+    }
+
+    if (!data.columns || data.columns.length === 0) {
+        panel.innerHTML = `<div class="alert alert-info">无数据</div>`;
+        return;
+    }
+
+    let html = `<div class="card">
+        <div class="card-header d-flex justify-content-between">
+            <span>结果 — ${data.total} 行${data.rows.length < data.total ? ` (显示前 ${data.rows.length})` : ''}</span>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped table-hover mb-0">
+                <thead><tr>`;
+
+    data.columns.forEach(col => {
+        html += `<th class="small">${col}</th>`;
+    });
+    html += `</tr></thead><tbody>`;
+
+    data.rows.forEach(row => {
+        html += `<tr>`;
+        data.columns.forEach(col => {
+            let val = row[col];
+            if (val === null || val === undefined) val = '';
+            if (typeof val === 'number') val = val.toLocaleString();
+            html += `<td class="small">${val}</td>`;
+        });
+        html += `</tr>`;
+    });
+    html += `</tbody></table></div></div>`;
+    panel.innerHTML = html;
+}
+
+function showError(err) {
+    document.getElementById('results-panel').innerHTML =
+        `<div class="alert alert-danger">${err.message || err}</div>`;
+}
+
+function exportCSV() {
+    if (!_lastResult || !_lastResult.columns) return;
+    let csv = _lastResult.columns.join(',') + '\n';
+    _lastResult.rows.forEach(row => {
+        csv += _lastResult.columns.map(c => {
+            let v = row[c];
+            if (v === null || v === undefined) return '';
+            v = String(v).replace(/"/g, '""');
+            return v.includes(',') ? `"${v}"` : v;
+        }).join(',') + '\n';
+    });
+    const blob = new Blob([csv], {type: 'text/csv;charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'query_result.csv';
+    a.click();
+}
+
+function loadExampleSql() {
+    const sql = `-- 个股行情 + 估值\nSELECT a.date, a.close, a.pct_chg, a.volume, a.turnover_rate,\n       b.pe_ttm, b.pb, b.total_mv\nFROM daily_ohlcv a\nLEFT JOIN daily_valuation b ON a.symbol = b.symbol AND a.date = b.date\nWHERE a.symbol = '600519'\nORDER BY a.date DESC\nLIMIT 20;`;
+    document.getElementById('sql-input').value = sql;
+}
+</script>
+{% endblock %}

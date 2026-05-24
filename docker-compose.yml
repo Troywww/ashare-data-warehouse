@@ -43,3 +43,23 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: ashare-data-warehouse-web:latest
+    container_name: ashare-data-warehouse-web
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ../data/ingestion:/app/data/ingestion
+    environment:
+      - INGESTION_DB_PATH=/app/data/ingestion/stock_research.duckdb
+      - INGESTION_DATA_DIR=/app/data/ingestion
+      - TZ=Asia/Shanghai
+    depends_on:
+      ingestion:
+        condition: service_healthy

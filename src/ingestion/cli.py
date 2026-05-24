@@ -70,7 +70,17 @@ def cmd_schedule(args):
     start_scheduler(cfg)
 
 
-
+def cmd_serve(args):
+    """Start the web control panel."""
+    cfg = load_config(args.config)
+    _setup_logging(cfg.logging.level, cfg.logging.file)
+    from src.ingestion.web import create_app
+    app = create_app()
+    app.config["CONFIG_PATH"] = args.config
+    host = args.host or "0.0.0.0"
+    port = int(args.port or 5000)
+    print(f"Web 控制面板启动: http://{host}:{port}")
+    app.run(host=host, port=port, debug=args.debug)
 
 
 def _print_results(results):
@@ -108,6 +118,10 @@ def main():
     )
     sub.add_parser("status", help="Show table row counts")
     sub.add_parser("schedule", help="Start scheduled runner (Docker default)")
+    serve_parser = sub.add_parser("serve", help="Start web control panel")
+    serve_parser.add_argument("--host", default="0.0.0.0", help="Listen host (default: 0.0.0.0)")
+    serve_parser.add_argument("--port", default=5000, type=int, help="Listen port (default: 5000)")
+    serve_parser.add_argument("--debug", action="store_true", help="Enable Flask debug mode")
 
     args = parser.parse_args()
 
@@ -116,6 +130,7 @@ def main():
         "backfill": cmd_backfill,
         "status": cmd_status,
         "schedule": cmd_schedule,
+        "serve": cmd_serve,
     }
     dispatch[args.command](args)
 

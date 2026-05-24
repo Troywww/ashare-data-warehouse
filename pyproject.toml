@@ -26,6 +26,9 @@ ingestion = "src.ingestion.cli:main"
 [tool.setuptools.packages.find]
 include = ["src*"]
 
+[tool.setuptools.package-data]
+"src.ingestion.web" = ["templates/*.html"]
+
 [tool.black]
 line-length = 120
 target-version = ['py310', 'py311', 'py312']

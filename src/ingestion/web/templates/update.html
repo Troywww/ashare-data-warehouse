@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}数据管理 — A股数据仓库{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="m-0">⚡ 数据管理</h4>
+</div>
+
+<!-- All-table actions -->
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="row g-2">
+            <div class="col-auto">
+                <button class="btn btn-primary" onclick="startTask('daily-update', null)">
+                    全量增量更新
+                </button>
+            </div>
+            <div class="col-auto">
+                <button class="btn btn-warning" onclick="startTask('backfill', null)">
+                    全量回补
+                </button>
+            </div>
+            <div class="col-auto">
+                <button class="btn btn-outline-info" onclick="refreshStatus()">
+                    刷新状态
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Per-table update -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>单表操作</span>
+        <span class="small text-secondary">每张表可单独触发增量更新或回补</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>表名</th>
+                        <th style="width:80px">行数</th>
+                        <th style="width:140px">最新日期</th>
+                        <th>说明</th>
+                        <th style="width:180px">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in tables %}
+                    <tr id="row-{{ t }}">
+                        <td><code>{{ t }}</code></td>
+                        <td class="rows-cell" id="rows-{{ t }}">-</td>
+                        <td class="date-cell" id="date-{{ t }}">-</td>
+                        <td class="text-secondary small desc-cell" id="desc-{{ t }}">-</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-primary me-1" onclick="startTask('daily-update', '{{ t }}')">
+                                增量
+                            </button>
+                            <button class="btn btn-sm btn-outline-warning" onclick="startTask('backfill', '{{ t }}')">
+                                回补
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Task progress -->
+<div class="card mt-3" id="task-panel" style="display:none">
+    <div class="card-header">任务进度</div>
+    <div class="card-body" id="task-progress"></div>
+</div>
+
+<!-- Recent tasks -->
+<div class="card mt-3">
+    <div class="card-header">最近任务</div>
+    <div class="card-body p-0" id="recent-tasks">
+        <div class="text-center text-secondary py-3" hx-get="/api/tasks" hx-trigger="load every:5s" hx-swap="innerHTML">
+            加载中...
+        </div>
+    </div>
+</div>
+
+<script>
+function startTask(type, table) {
+    const panel = document.getElementById('task-panel');
+    const progress = document.getElementById('task-progress');
+    panel.style.display = 'block';
+    progress.innerHTML = `<div class="d-flex align-items-center">
+        <div class="spinner-border spinner-border-sm me-2"></div>
+        <span>启动中...</span>
+    </div>`;
+
+    const body = { backfill: type === 'backfill' };
+    if (table) body.tables = [table];
+
+    fetch('/api/update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+    })
+    .then(r => r.json())
+    .then(data => pollTask(data.task_id));
+}
+
+function pollTask(taskId) {
+    const el = document.getElementById('task-progress');
+    const panel = document.getElementById('task-panel');
+
+    const poll = setInterval(() => {
+        fetch(`/api/task/${taskId}`)
+            .then(r => r.json())
+            .then(task => {
+                if (task.status === 'running' || task.status === 'pending') {
+                    el.innerHTML = `<div class="d-flex align-items-center">
+                        <div class="spinner-border spinner-border-sm me-2"></div>
+                        <span>运行中... (${task.progress || ''})</span>
+                    </div>`;
+                } else if (task.status === 'done') {
+                    clearInterval(poll);
+                    let html = `<div class="alert alert-success mb-0">
+                        <strong>完成</strong> — ${task.ok} 个成功`;
+                    if (task.failed > 0) html += `, ${task.failed} 个失败`;
+                    html += `，共 ${task.rows} 行`;
+                    html += `</div>`;
+                    if (task.results) {
+                        html += `<table class="table table-sm mt-2 mb-0">
+                            <tr><th>名称</th><th>行数</th><th>耗时</th><th>状态</th></tr>`;
+                        task.results.forEach(r => {
+                            const status = r.error ? `<span class="text-danger">✗ ${r.error}</span>`
+                                : r.skipped ? `<span class="text-secondary">跳过</span>`
+                                : `<span class="text-success">✓</span>`;
+                            html += `<tr><td>${r.name}</td><td>${r.rows.toLocaleString()}</td><td>${r.elapsed}s</td><td>${status}</td></tr>`;
+                        });
+                        html += `</table>`;
+                    }
+                    el.innerHTML = html;
+                    setTimeout(() => panel.style.display = 'none', 30000);
+                    refreshStatus();
+                } else if (task.status === 'error') {
+                    clearInterval(poll);
+                    el.innerHTML = `<div class="alert alert-danger mb-0">错误: ${task.error}</div>`;
+                }
+            });
+    }, 1000);
+}
+
+function refreshStatus() {
+    fetch('/api/tables')
+        .then(r => r.json())
+        .then(tables => {
+            tables.forEach(t => {
+                const rowEl = document.getElementById(`rows-${t.name}`);
+                if (rowEl) rowEl.textContent = t.rows.toLocaleString();
+                const dateEl = document.getElementById(`date-${t.name}`);
+                if (dateEl) dateEl.textContent = t.max_date || '-';
+                const descEl = document.getElementById(`desc-${t.name}`);
+                if (descEl) descEl.textContent = t.description;
+            });
+        });
+}
+
+// Load table status on page load
+refreshStatus();
+</script>
+{% endblock %}
