@@ -159,6 +159,47 @@ http://localhost:5000
 
 ---
 
+## MCP Server（HTTP/SSE）
+
+提供 **18 个只读数据工具**，其他 Agent 可通过 MCP 协议远程查询数据。
+
+Docker 部署后自动启动，端口 `8000`。其他 Agent 配置：
+
+```json
+{
+  "mcpServers": {
+    "ashare": {
+      "url": "http://你的服务器IP:8000/sse"
+    }
+  }
+}
+```
+
+| 工具 | 说明 |
+|------|------|
+| `query_kline` | 日K线（前复权） |
+| `query_valuation` | PE/PB/估值数据 |
+| `query_fundamentals` | 季度财务 |
+| `query_capital_flow` | 资金流向 |
+| `query_dragon_tiger` | 龙虎榜 |
+| `query_northbound_flow` | 北向资金 |
+| `query_board_daily` | 板块涨跌排名 |
+| `query_margin_trading` | 融资融券 |
+| `query_hot_stocks` | 热度排名 |
+| `query_block_trades` | 大宗交易 |
+| `query_lockup_calendar` | 限售解禁 |
+| `query_global_markets` | 外围指数 |
+| `query_holder_count` | 股东户数 |
+| `search_stocks` | 股票搜索 |
+| `query_industry_stocks` | 行业成分股 |
+| `query_concept_stocks` | 概念板块 |
+| `get_market_overview` | 市场概览 |
+| `run_sql` | 自定义只读SQL |
+
+> MCP Server 只提供**稳定读接口**，与在线/实验性功能分离。在线数据获取和自定义分析通过 `.claude/skills/ashare-data-warehouse.md` Skill 实现。
+
+---
+
 ## 快速开始
 
 ```bash
