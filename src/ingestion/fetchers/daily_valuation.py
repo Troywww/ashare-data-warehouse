@@ -158,7 +158,7 @@ def _baostock_single(symbols: list[str], db_path: str, start: int, end: int) -> 
         bs.logout()
 
 
-def _fetch_baostock_history(symbols: list[str], db_path: str) -> int:
+def _fetch_baostock_history(symbols: list[str], db_path: str, thread_pool: int = 1) -> int:
     """Fetch valuation history via baostock (sequential, incremental DB writes).
 
     baostock uses a global session, so queries run sequentially with a lock.
@@ -186,12 +186,30 @@ def _fetch_baostock_history(symbols: list[str], db_path: str) -> int:
 
     logger.info("valuation backfill: %d/%d stocks to fetch", len(to_fetch), len(symbols))
 
-    # Process in sequential chunks, writing to DB as we go
-    for start in range(0, len(to_fetch), 100):
-        end = min(start + 100, len(to_fetch))
-        n = _baostock_single(to_fetch, db_path, start, end)
-        total += n
-        logger.info("valuation backfill: %d-%d/%d done (%d rows)", start, end, len(to_fetch), total)
+    # Parallel: split into batches, run in thread pool (baostock uses per-thread login)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    batch_size = 100
+    batches = []
+    for start in range(0, len(to_fetch), batch_size):
+        end = min(start + batch_size, len(to_fetch))
+        batches.append((to_fetch, db_path, start, end))
+
+    n_workers = min(config.thread_pool, len(batches), 4)
+    logger.info("valuation backfill: %d batches, %d workers", len(batches), n_workers)
+
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        fut_map = {pool.submit(_baostock_single, *b): b for b in batches}
+        done_batches = 0
+        for fut in as_completed(fut_map):
+            done_batches += 1
+            try:
+                n = fut.result()
+                total += n
+                logger.info("valuation backfill: batch %d/%d done (%d rows total, %d rows this batch)",
+                            done_batches, len(batches), total, n)
+            except Exception as e:
+                logger.error("valuation backfill: batch failed: %s", e)
 
     return total
 
@@ -223,7 +241,7 @@ def fetch(db: IngestionDB, config: Config, trade_date: date) -> int:
     need_backfill = getattr(config, "_backfill", False)
     if need_backfill:
         logger.info("valuation: backfill from baostock (%d stocks)", len(symbols))
-        total += _fetch_baostock_history(symbols, db.db_path)
+        total += _fetch_baostock_history(symbols, db.db_path, thread_pool=config.thread_pool)
         logger.info("valuation: backfill done — %d rows", total)
 
     # Daily incremental from 腾讯API
