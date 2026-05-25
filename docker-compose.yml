@@ -63,3 +63,26 @@ services:
     depends_on:
       ingestion:
         condition: service_healthy
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    image: ashare-data-warehouse-mcp:latest
+    container_name: ashare-data-warehouse-mcp
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ../data/ingestion:/app/data/ingestion
+    environment:
+      - INGESTION_DB_PATH=/app/data/ingestion/stock_research.duckdb
+      - INGESTION_DATA_DIR=/app/data/ingestion
+      - INGESTION_CONFIG=/app/config.yaml
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+      - TZ=Asia/Shanghai
+    depends_on:
+      ingestion:
+        condition: service_healthy

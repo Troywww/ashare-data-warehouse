@@ -1,0 +1,20 @@
+# ============================================================================
+# A股数据仓库 — MCP Server (HTTP/SSE)
+# ============================================================================
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY wheels/ /tmp/wheels/
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --find-links /tmp/wheels opentdx \
+    && pip install --no-cache-dir -r requirements.txt
+
+COPY pyproject.toml ./
+COPY src/ ./src/
+RUN pip install --no-cache-dir --find-links /tmp/wheels . \
+    && rm -rf /tmp/wheels
+
+EXPOSE 8000
+
+CMD ["python", "-m", "src.ingestion.mcp_server"]
