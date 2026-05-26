@@ -77,32 +77,29 @@ def _fetch_batch_opentdx(
         with TdxClient() as client:
             for sym in chunk:
                 try:
-                    bars = client.stock_kline(
-                        symbol=sym,
-                        market=market_map.get(sym, MARKET.SH),
-                        adjust=ADJUST.QFQ,
-                        count=min(800, count),
-                    )
+                    market = market_map.get(sym, MARKET.SH)
+                    bars = client.stock_kline(market, sym, PERIOD.DAILY, 0, min(800, count), adjust=ADJUST.QFQ)
                 except Exception:
                     _err[0] += 1
                     continue
                 if not bars:
                     continue
                 for b in bars:
-                    d = b.get("date", "")
-                    if isinstance(d, str) and len(d) >= 10:
-                        chunk_rows.append({
-                            "symbol": sym,
-                            "date": datetime.strptime(str(d)[:10], "%Y-%m-%d").date(),
-                            "open": b.get("open"),
-                            "high": b.get("high"),
-                            "low": b.get("low"),
-                            "close": b.get("close"),
-                            "volume": b.get("volume"),
-                            "amount": b.get("amount"),
-                            "pct_chg": b.get("pct_chg"),
-                            "turnover_rate": b.get("turnover_rate"),
-                        })
+                    dt = b.get("datetime")
+                    if dt is None:
+                        continue
+                    chunk_rows.append({
+                        "symbol": sym,
+                        "date": dt.date() if hasattr(dt, "date") else dt,
+                        "open": b.get("open"),
+                        "high": b.get("high"),
+                        "low": b.get("low"),
+                        "close": b.get("close"),
+                        "volume": int(b.get("vol", 0)) if b.get("vol") else 0,
+                        "amount": b.get("amount"),
+                        "pct_chg": None,
+                        "turnover_rate": b.get("turnover"),
+                    })
         if chunk_rows and write_db:
             df_chunk = pd.DataFrame(chunk_rows)
             write_db.upsert_dataframe("daily_ohlcv", df_chunk)
