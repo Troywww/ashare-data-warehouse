@@ -1,12 +1,12 @@
 # ============================================================================
 # A股数据仓库 — MCP Server (HTTP/SSE)
-# 轻量镜像：仅 MCP 需要的依赖，不含 akshare/baostock/opentdx 等重型包
+# DataService: easy_tdx 实时行情, httpx 新闻/快讯
 # ============================================================================
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# MCP 只读 DuckDB，不需要 akshare/baostock/opentdx
+# MCP + 数据访问依赖
 RUN pip install --no-cache-dir \
     duckdb>=1.1.0 \
     pandas>=2.0.0 \
@@ -14,12 +14,20 @@ RUN pip install --no-cache-dir \
     pyyaml>=6.0 \
     python-dotenv>=1.0.0 \
     mcp>=1.0.0 \
-    uvicorn>=0.30.0
+    uvicorn>=0.30.0 \
+    httpx>=0.27.0 \
+    beautifulsoup4>=4.12.0 \
+    easy_tdx>=1.4.0 \
+    akshare>=1.12.0
 
-# 安装项目包（跳过声明依赖，因为核心依赖已在上方装好）
+# 安装项目包（跳过声明依赖）
 COPY pyproject.toml ./
 COPY src/ ./src/
 RUN pip install --no-cache-dir --no-deps .
+
+# Persist easy_tdx cache across restarts
+RUN mkdir -p /app/data/.easy_tdx/cache \
+    && ln -sf /app/data/.easy_tdx /root/.easy_tdx
 
 EXPOSE 8000
 

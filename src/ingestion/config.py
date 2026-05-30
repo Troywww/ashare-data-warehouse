@@ -42,10 +42,12 @@ class ScheduleConfig:
         "core": "16:00",
         "signals": "17:00",
         "global_markets": "09:00",
+        "weekly": "weekly 10:00",
         "trade_calendar": "yearly 10:00",
         "holder_count": "monthly 10:00",
-        "fundamentals": "quarterly 10:00",
+        "fundamentals": "monthly 10:00",
     })
+    schedule_groups: dict[str, list[str]] = field(default_factory=dict)
 
     def get_time(self, fetcher_name: str) -> str | None:
         """Get scheduled time for a fetcher.
@@ -55,7 +57,7 @@ class ScheduleConfig:
         if fetcher_name in self.data:
             return self.data[fetcher_name]
         # Check groups
-        for group_name, members in SCHEDULE_GROUPS.items():
+        for group_name, members in self.schedule_groups.items():
             if fetcher_name in members and group_name in self.data:
                 return self.data[group_name]
         return None
@@ -75,7 +77,7 @@ class ScheduleConfig:
 
 @dataclass
 class SourceToggles:
-    opentdx: bool = True
+    easy_tdx: bool = True
     baostock: bool = True
     tencent_api: bool = True
     eastmoney: bool = True
@@ -100,13 +102,16 @@ class Config:
     # Schedule groups — fetcher grouping for batch scheduling
     schedule_groups: dict[str, list[str]] = field(default_factory=lambda: {
         "core": [
-            "stock_universe", "stock_classification", "concept_blocks",
-            "daily_ohlcv", "daily_valuation", "capital_flow",
-            "northbound_flow", "board_daily", "xdxr_events",
+            "stock_universe",
+            "xdxr_events", "daily_ohlcv", "daily_valuation",
+            "capital_flow", "northbound_flow", "board_daily",
         ],
         "signals": [
             "dragon_tiger", "hot_stocks", "hot_reasons", "margin_trading",
-            "block_trades", "lockup_calendar",
+            "block_trades", "lockup_calendar", "indicator_values",
+        ],
+        "weekly": [
+            "stock_classification", "concept_blocks",
         ],
     })
 
@@ -203,6 +208,11 @@ def load_config(yaml_path: Optional[str] = None) -> Config:
     # Reconstruct nested dataclasses
     for key, cls in [("schedule", ScheduleConfig), ("sources", SourceToggles), ("logging", LoggingConfig)]:
         if key in raw and isinstance(raw[key], dict):
-            setattr(cfg, key, cls(**raw[key]))
+            if key == "schedule":
+                sched_dict = dict(raw[key])
+                sched_dict.setdefault("schedule_groups", raw.get("schedule_groups", {}))
+                setattr(cfg, key, cls(**sched_dict))
+            else:
+                setattr(cfg, key, cls(**raw[key]))
 
     return cfg

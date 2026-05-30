@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # A股数据仓库 — Docker 镜像
 # ============================================================================
 
@@ -6,14 +6,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Copy local wheels for opentdx (not on PyPI)
-COPY wheels/ /tmp/wheels/
-
 # Copy dependency files and install
 COPY requirements.txt ./
-# Install opentdx from local wheel first
-RUN pip install --no-cache-dir --find-links /tmp/wheels opentdx \
-    && pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
@@ -21,16 +16,15 @@ COPY config.yaml ./
 
 # Install the package itself
 COPY pyproject.toml ./
-# Install the package; opentdx is already installed above
-RUN pip install --no-cache-dir --find-links /tmp/wheels . \
-    && rm -rf /tmp/wheels
+RUN pip install --no-cache-dir .
 
-# Create data directory
-RUN mkdir -p /app/data/ingestion
+# Create data directory and persist easy_tdx cache (avoids 15min refetch on restart)
+RUN mkdir -p /app/data/ingestion /app/data/.easy_tdx/cache \
+    && ln -sf /app/data/.easy_tdx /root/.easy_tdx
 
-# Default command: run scheduler (blocking)
-CMD ["ingestion", "schedule"]
+# Entrypoint: scheduler + MCP server
+COPY docker-entrypoint.sh /app/
+RUN chmod +x /app/docker-entrypoint.sh
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
-# Healthcheck
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "from src.ingestion.db import IngestionDB; IngestionDB().get_db_size()" || exit 1
+# Healthcheck is defined in docker-compose.yml (TCP check on MCP port)

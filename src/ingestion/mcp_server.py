@@ -1,6 +1,6 @@
 """MCP Server (HTTP/SSE) — A 股数据查询接口.
 
-部署后其他 Agent 可通过 MCP 协议远程查询 DuckDB 中的 19 张表。
+部署后其他 Agent 可通过 MCP 协议远程查询 DuckDB 中的 27 张表。
 只读操作，不做数据更新（更新请通过 web 面板或 CLI）。
 
 Agent 配置:
@@ -24,6 +24,7 @@ from mcp.server.fastmcp import FastMCP
 from src.ingestion.config import load_config
 from src.ingestion.db import IngestionDB
 from src.ingestion.fetchers import FETCHER_REGISTRY
+from src.ingestion.service import DataService, POLICIES
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,8 +53,18 @@ def _to_json(df: pd.DataFrame) -> str:
 
 
 def _get_db() -> IngestionDB:
+    """Open DuckDB — same process as scheduler thread, so default mode is safe.
+
+    Both the MCP query handlers and the scheduler thread use the default
+    (read_write) connection mode, which DuckDB allows within a single process.
+    """
     cfg = load_config(_config_path)
     return IngestionDB(cfg.db_path)
+
+
+def _get_service() -> DataService:
+    cfg = load_config(_config_path)
+    return DataService(cfg.db_path)
 
 
 # ---------------------------------------------------------------------------
@@ -87,20 +98,9 @@ async def query_valuation(symbol: str, days: int = 60) -> str:
 
 @mcp.tool(description="查询外围指数行情 (美股/港股/黄金/原油)，留空=所有指数最新价")
 async def query_global_markets(symbol: str = "") -> str:
-    db = _get_db()
-    if symbol:
-        df = db.conn.execute("""
-            SELECT date, open, high, low, close, volume
-            FROM global_markets WHERE symbol = ?
-            ORDER BY date DESC LIMIT 60
-        """, [symbol]).fetchdf()
-    else:
-        df = db.conn.execute("""
-            SELECT symbol, date, close FROM global_markets
-            WHERE date = (SELECT MAX(date) FROM global_markets) ORDER BY symbol
-        """).fetchdf()
-    db.close()
-    return _to_json(df)
+    svc = _get_service()
+    result = await svc.fetch("global_markets", {"symbol": symbol})
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ async def query_global_markets(symbol: str = "") -> str:
 async def query_capital_flow(symbol: str, days: int = 60) -> str:
     db = _get_db()
     df = db.conn.execute("""
-        SELECT date, net_main, net_super_5d, net_large_5d, net_medium_5d, net_small_5d
+        SELECT date, net_main, net_super, net_large, net_medium, net_small
         FROM capital_flow WHERE symbol = ?
         ORDER BY date DESC LIMIT ?
     """, [symbol, days]).fetchdf()
@@ -131,23 +131,11 @@ async def query_northbound_flow(days: int = 30) -> str:
     return _to_json(df)
 
 
-@mcp.tool(description="查询融资融券数据，symbol=股票代码(留空=全市场汇总)")
+@mcp.tool(description="查询融资融券数据，symbol=股票代码(留空=全市场当天)")
 async def query_margin_trading(symbol: str = "") -> str:
-    db = _get_db()
-    if symbol:
-        df = db.conn.execute("""
-            SELECT date, rzye, rzye_buy, rqyl, rzrqye
-            FROM margin_trading WHERE symbol = ?
-            ORDER BY date DESC LIMIT 60
-        """, [symbol]).fetchdf()
-    else:
-        df = db.conn.execute("""
-            SELECT date, SUM(rzye) as total_融资余额, SUM(rqyl) as total_融券余量
-            FROM margin_trading GROUP BY date
-            ORDER BY date DESC LIMIT 30
-        """).fetchdf()
-    db.close()
-    return _to_json(df)
+    svc = _get_service()
+    result = await svc.fetch("margin_trading", {"symbol": symbol})
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -155,83 +143,58 @@ async def query_margin_trading(symbol: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(description="查询龙虎榜，date_str=日期(YYYY-MM-DD，留空=最近5天)")
+@mcp.tool(description="查询龙虎榜，date_str=日期(YYYY-MM-DD，留空=最近7天)")
 async def query_dragon_tiger(date_str: str = "") -> str:
-    db = _get_db()
-    if date_str:
-        df = db.conn.execute("""
-            SELECT symbol, date, reason, change_pct, net_buy, buy_amount,
-                   sell_amount, net_buy_ratio, perf_1d, perf_2d, perf_5d
-            FROM dragon_tiger WHERE date = ? ORDER BY net_buy DESC
-        """, [date_str]).fetchdf()
-    else:
-        df = db.conn.execute("""
-            SELECT symbol, date, reason, change_pct, net_buy, buy_amount,
-                   sell_amount, net_buy_ratio, perf_1d, perf_2d, perf_5d
-            FROM dragon_tiger ORDER BY date DESC, net_buy DESC LIMIT 100
-        """).fetchdf()
-    db.close()
-    return _to_json(df)
+    svc = _get_service()
+    result = await svc.fetch("dragon_tiger", {"date_str": date_str})
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@mcp.tool(description="查询龙虎榜席位明细（买入/卖出营业部详情），symbol=股票代码，date_str=日期(YYYY-MM-DD)")
+async def query_dragon_tiger_seats(symbol: str, date_str: str = "") -> str:
+    svc = _get_service()
+    result = await svc.fetch("dragon_tiger_seats", {"symbol": symbol, "date_str": date_str})
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 @mcp.tool(description="查询板块涨跌排名，date_str留空=最新一天，top_n=返回条数")
 async def query_board_daily(date_str: str = "", top_n: int = 20) -> str:
-    db = _get_db()
-    if date_str:
-        df = db.conn.execute("""
-            SELECT date, board_name, board_type, change_pct, rank, leader_name
-            FROM board_daily WHERE date = ? ORDER BY rank LIMIT ?
-        """, [date_str, top_n]).fetchdf()
-    else:
-        df = db.conn.execute("""
-            SELECT date, board_name, board_type, change_pct, rank, leader_name
-            FROM board_daily WHERE date = (SELECT MAX(date) FROM board_daily)
-            ORDER BY rank LIMIT ?
-        """, [top_n]).fetchdf()
-    db.close()
-    return _to_json(df)
+    svc = _get_service()
+    result = await svc.fetch("board_daily", {})
+    # Filter top_n client-side
+    if isinstance(result, list) and len(result) > top_n:
+        result = result[:top_n]
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 @mcp.tool(description="查询雪球关注热度排名，top_n=返回条数")
 async def query_hot_stocks(top_n: int = 30) -> str:
-    db = _get_db()
-    df = db.conn.execute("""
-        SELECT date, rank, symbol, stock_name, follow_count, price
-        FROM hot_stocks WHERE date = (SELECT MAX(date) FROM hot_stocks)
-        ORDER BY rank LIMIT ?
-    """, [top_n]).fetchdf()
-    db.close()
-    return _to_json(df)
+    svc = _get_service()
+    result = await svc.fetch("hot_stocks", {})
+    if isinstance(result, list) and len(result) > top_n:
+        result = result[:top_n]
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@mcp.tool(description="查询同花顺热点题材归因，返回当天热点股票及涨停原因")
+async def query_hot_reasons() -> str:
+    svc = _get_service()
+    result = await svc.fetch("hot_reasons", {})
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 @mcp.tool(description="查询大宗交易，symbol=股票代码(留空=全市场)，days=最近天数")
 async def query_block_trades(symbol: str = "", days: int = 30) -> str:
-    db = _get_db()
-    if symbol:
-        df = db.conn.execute("""
-            SELECT stock_code, trade_date, price, volume, amount, premium_ratio
-            FROM block_trades WHERE stock_code = ?
-            ORDER BY trade_date DESC LIMIT ?
-        """, [symbol, days]).fetchdf()
-    else:
-        df = db.conn.execute("""
-            SELECT stock_code, trade_date, price, amount, premium_ratio
-            FROM block_trades ORDER BY trade_date DESC LIMIT 50
-        """).fetchdf()
-    db.close()
-    return _to_json(df)
+    svc = _get_service()
+    result = await svc.fetch("block_trades", {"symbol": symbol})
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 @mcp.tool(description="查询限售解禁日历，days_ahead=未来多少天")
 async def query_lockup_calendar(days_ahead: int = 30) -> str:
-    db = _get_db()
-    df = db.conn.execute("""
-        SELECT stock_code, unlock_date, unlock_vol, unlock_ratio
-        FROM lockup_calendar WHERE unlock_date BETWEEN CURRENT_DATE AND CURRENT_DATE + ?
-        ORDER BY unlock_date
-    """, [days_ahead]).fetchdf()
-    db.close()
-    return _to_json(df)
+    svc = _get_service()
+    result = await svc.fetch("lockup_calendar", {})
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +274,7 @@ async def query_concept_stocks(concept_name: str) -> str:
 @mcp.tool(description="获取市场概览：各表行数、最新日期、数据库大小")
 async def get_market_overview() -> str:
     cfg = load_config(_config_path)
-    db = IngestionDB(cfg.db_path)
+    db = _get_db()
     stats = db.table_stats()
     db_size = db.get_db_size()
 
@@ -347,6 +310,147 @@ async def run_sql(sql: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 工具: 实时数据（走 DataService + Cache）
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(description="获取个股实时行情（盘中3秒刷新），symbol=股票代码(如000001)")
+async def get_realtime_quote(symbol: str) -> str:
+    svc = _get_service()
+    result = await svc.fetch("realtime_quote", {"symbol": symbol})
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@mcp.tool(description="批量获取实时行情，symbols=多个股票代码用逗号分隔(如000001,600000)")
+async def get_realtime_quotes(symbols: str) -> str:
+    svc = _get_service()
+    code_list = [s.strip() for s in symbols.split(",")]
+    result = await svc.fetch("realtime_quotes", {"symbols": code_list})
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@mcp.tool(description="获取盘中分钟K线，symbol=股票代码，period=周期(1min/5min/15min)，count=条数")
+async def get_intraday_kline(symbol: str, period: str = "1min", count: int = 240) -> str:
+    data_type = f"intraday_kline_{period}" if period in ("1min", "5min") else "intraday_kline_1min"
+    svc = _get_service()
+    result = await svc.fetch(data_type, {"symbol": symbol, "count": count})
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@mcp.tool(description="获取今日涨停梯队（连板排名）")
+async def get_limit_up_ladder() -> str:
+    svc = _get_service()
+    result = await svc.fetch("limit_up_ladder")
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@mcp.tool(description="获取最新市场滚动新闻（新浪财经），count=条数")
+async def get_latest_news(count: int = 50) -> str:
+    svc = _get_service()
+    result = await svc.fetch("cls_telegram", {"count": count})
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@mcp.tool(description="获取个股新闻，symbol=股票代码")
+async def get_stock_news(symbol: str) -> str:
+    svc = _get_service()
+    result = await svc.fetch("stock_news", {"symbol": symbol})
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@mcp.tool(description="获取个股公告，symbol=股票代码，days=回溯天数")
+async def get_announcements(symbol: str, days: int = 30) -> str:
+    svc = _get_service()
+    result = await svc.fetch("announcements", {"symbol": symbol, "days": days})
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@mcp.tool(description="获取个股研报（东财），symbol=股票代码")
+async def get_research_reports(symbol: str) -> str:
+    svc = _get_service()
+    result = await svc.fetch("research_reports", {"symbol": symbol})
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@mcp.tool(description="获取机构一致预期EPS，symbol=股票代码")
+async def get_eps_consensus(symbol: str) -> str:
+    svc = _get_service()
+    result = await svc.fetch("eps_consensus", {"symbol": symbol})
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@mcp.tool(description="查询大股东增减持记录，symbol=股票代码（按需拉取并缓存）")
+async def query_shareholder_changes(symbol: str = "") -> str:
+    if not symbol:
+        db = _get_db()
+        df = db.conn.execute("""
+            SELECT * FROM shareholder_changes
+            ORDER BY announce_date DESC LIMIT 50
+        """).fetchdf()
+        db.close()
+        return _to_json(df)
+    svc = _get_service()
+    result = await svc.fetch("shareholder_changes", {"symbol": symbol})
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+# ---------------------------------------------------------------------------
+# 工具: 计算层
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(description="查找出现技术信号的股票，indicator=macd/kdj/rsi/boll，signal=golden_cross/dead_cross/oversold/overbought/upper_break/lower_break，period=daily/weekly")
+async def find_signal_stocks(indicator: str = "macd", signal: str = "golden_cross",
+                              period: str = "daily", lookback: int = 120) -> str:
+    svc = _get_service()
+    result = await svc.compute("signal_scan", {
+        "indicator": indicator,
+        "signal": signal,
+        "period": period,
+        "lookback": lookback,
+    })
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@mcp.tool(description="计算个股技术指标，symbol=股票代码，indicator=macd/kdj/rsi/boll，可指定参数如fast/slow/signal/period")
+async def compute_indicator(symbol: str, indicator: str = "macd",
+                             fast: int = 12, slow: int = 26, signal_period: int = 9,
+                             lookback: int = 120) -> str:
+    svc = _get_service()
+    result = await svc.compute(indicator, {
+        "symbol": symbol,
+        "fast": fast,
+        "slow": slow,
+        "signal": signal_period,
+        "lookback": lookback,
+    })
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+# ---------------------------------------------------------------------------
+# 工具: 系统管理
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(description="清除缓存（开盘前调用，或指定type只清某一类）")
+async def clear_cache(data_type: str = "") -> str:
+    svc = _get_service()
+    if data_type:
+        cleared = svc.invalidate_by_type(data_type)
+        return json.dumps({"cleared": cleared, "type": data_type}, ensure_ascii=False)
+    else:
+        cleared = svc.invalidate_all()
+        return json.dumps({"cleared": cleared, "type": "all"}, ensure_ascii=False)
+
+
+@mcp.tool(description="查看缓存统计")
+async def cache_stats() -> str:
+    svc = _get_service()
+    stats = svc.cache_stats()
+    return json.dumps(stats, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
 # 启动
 # ---------------------------------------------------------------------------
 
@@ -360,6 +464,13 @@ def _human_size(b: int) -> str:
 
 
 def main():
+    # Start scheduler as a daemon thread BEFORE uvicorn — this ensures both
+    # the scheduler and MCP handlers share the same Python process, so DuckDB
+    # connections (all default read_write mode) can coexist.
+    from src.ingestion.scheduler import start_scheduler_thread
+    cfg = load_config(_config_path)
+    start_scheduler_thread(cfg)
+
     host = os.getenv("MCP_HOST", "0.0.0.0")
     port = int(os.getenv("MCP_PORT", "8000"))
     logger.info("MCP Server starting on http://%s:%d/sse", host, port)

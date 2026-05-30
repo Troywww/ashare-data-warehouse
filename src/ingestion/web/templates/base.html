@@ -54,10 +54,23 @@
                     🕐 调度配置
                 </a>
             </li>
+            <li class="nav-item">
+                <a class="nav-link text-white {% if request.path == '/mcp' %}active fw-bold{% endif %}" href="/mcp">
+                    🔧 MCP 工具
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link text-white {% if request.path == '/data' %}active fw-bold{% endif %}" href="/data">
+                    💾 数据与缓存
+                </a>
+            </li>
             <li class="nav-item mt-3">
                 <span class="nav-link small text-secondary" id="scheduler-status">
                     调度器: <span class="badge bg-secondary">检测中...</span>
                 </span>
+            </li>
+            <li class="nav-item" id="init-status-nav" style="display:none">
+                <span class="nav-link small" id="init-status-badge"></span>
             </li>
         </ul>
     </div>
@@ -99,8 +112,34 @@
                     el.innerHTML = '调度器: <span class="badge bg-secondary">检测中...</span>';
                 });
         }
-        document.addEventListener('DOMContentLoaded', updateSchedulerStatus);
+
+        // 系统初始化状态
+        function updateInitStatus() {
+            const el = document.getElementById('init-status-nav');
+            const badge = document.getElementById('init-status-badge');
+            if (!el || !badge) return;
+            fetch('/api/system-status')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) return;
+                    el.style.display = 'block';
+                    if (data.all_initialized) {
+                        badge.innerHTML = '系统: <span class="badge bg-success">已初始化</span>';
+                    } else {
+                        const missing = Object.entries(data.init||{})
+                            .filter(([,v]) => !v.initialized).map(([k]) => k).join(', ');
+                        badge.innerHTML = '系统: <span class="badge bg-warning text-dark">未初始化</span>';
+                        badge.title = '缺失数据: ' + missing;
+                    }
+                })
+                .catch(() => {});
+        }
+        document.addEventListener('DOMContentLoaded', () => {
+            updateSchedulerStatus();
+            updateInitStatus();
+        });
         setInterval(updateSchedulerStatus, 30000);
+        setInterval(updateInitStatus, 120000);
     </script>
     {% block scripts %}{% endblock %}
 </body>

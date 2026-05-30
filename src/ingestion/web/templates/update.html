@@ -26,8 +26,15 @@
                 </button>
             </div>
             <div class="col-auto">
-                <span class="text-secondary small">回补仅对支持历史积累的表有效（daily_ohlcv、daily_valuation）</span>
+                <span class="small" id="init-summary"></span>
             </div>
+        </div>
+        <div class="mt-2 small text-secondary">
+            <strong>全量增量更新</strong> 按依赖拓扑分 3 波执行全部 <strong>27</strong> 张表：
+            <span class="badge bg-info">Wave 0 并行</span> 13 张独立表（stock_universe, trade_calendar, global_markets, northbound_flow, board_daily, dragon_tiger, hot_stocks, hot_reasons, margin_trading, block_trades, lockup_calendar, holder_count, fundamentals）→
+            <span class="badge bg-warning text-dark">Wave 1 串行</span> xdxr_events → daily_ohlcv →
+            <span class="badge bg-success">Wave 2 并行</span> 5 张依赖表（daily_valuation, capital_flow, stock_classification, concept_blocks, indicator_values）
+            <br><span class="text-secondary">注：shareholder_changes（按需，200只限制）不纳入全量更新；indicator_values 纳入 Wave 2 + 每日调度</span>
         </div>
     </div>
 </div>
@@ -49,6 +56,8 @@
                         <th style="width:80px">行数</th>
                         <th style="width:125px">数据最新</th>
                         <th style="width:155px">上次更新</th>
+                        <th style="width:55px">初始化</th>
+                        <th style="width:55px">回补</th>
                         <th style="width:40px"></th>
                         <th style="width:160px">操作</th>
                     </tr>
@@ -61,6 +70,8 @@
                         <td class="rows-cell" id="rows-{{ t.name }}">-</td>
                         <td class="date-cell small" id="date-{{ t.name }}">-</td>
                         <td class="update-cell small text-secondary" id="update-{{ t.name }}">-</td>
+                        <td id="init-{{ t.name }}">-</td>
+                        <td id="backfill-{{ t.name }}">-</td>
                         <td id="status-{{ t.name }}">-</td>
                         <td>
                             <button class="btn btn-sm btn-outline-primary py-0 me-1" onclick="startTask('daily-update', '{{ t.name }}')">
@@ -107,6 +118,7 @@ function startTask(type, table) {
         <div class="spinner-border spinner-border-sm me-2"></div>
         <span>启动中...</span>
     </div>`;
+    panel.scrollIntoView({ behavior: 'smooth' });
 
     const body = { backfill: type === 'backfill' };
     if (table) body.tables = [table];
@@ -116,8 +128,17 @@ function startTask(type, table) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(body),
     })
-    .then(r => r.json())
-    .then(data => pollTask(data.task_id));
+    .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+    })
+    .then(data => {
+        if (data.error) throw new Error(data.error);
+        pollTask(data.task_id);
+    })
+    .catch(err => {
+        progress.innerHTML = `<div class="alert alert-danger mb-0">启动失败: ${err.message}</div>`;
+    });
 }
 
 function pollTask(taskId) {
@@ -128,45 +149,130 @@ function pollTask(taskId) {
         fetch(`/api/task/${taskId}`)
             .then(r => r.json())
             .then(task => {
-                if (task.status === 'running' || task.status === 'pending') {
+                if (task.status === 'running') {
+                    el.innerHTML = renderRunningTask(task);
+                } else if (task.status === 'pending') {
                     el.innerHTML = `<div class="d-flex align-items-center">
                         <div class="spinner-border spinner-border-sm me-2"></div>
-                        <span>运行中...</span>
+                        <span>等待启动...</span>
                     </div>`;
                 } else if (task.status === 'done') {
                     clearInterval(poll);
-                    let html = `<div class="alert alert-success mb-0">
-                        <strong>完成</strong> — ${task.ok} 个成功`;
-                    if (task.failed > 0) html += `, ${task.failed} 个失败`;
-                    html += `，共 ${task.rows} 行</div>`;
-                    if (task.results) {
-                        html += `<table class="table table-sm mt-2 mb-0">
-                            <tr><th>名称</th><th>行数</th><th>耗时</th><th>状态</th></tr>`;
-                        task.results.forEach(r => {
-                            const status = r.error ? `<span class="text-danger">✗ ${r.error}</span>`
-                                : r.skipped ? `<span class="text-secondary">跳过</span>`
-                                : `<span class="text-success">✓</span>`;
-                            html += `<tr><td>${r.name}</td><td>${r.rows.toLocaleString()}</td><td>${r.elapsed}s</td><td>${status}</td></tr>`;
-                        });
-                        html += `</table>`;
-                    }
-                    el.innerHTML = html;
-                    setTimeout(() => panel.style.display = 'none', 30000);
+                    el.innerHTML = renderDoneTask(task);
+                    setTimeout(() => { if (panel) panel.style.display = 'none'; }, 30000);
                     loadTables();
                 } else if (task.status === 'error') {
                     clearInterval(poll);
                     el.innerHTML = `<div class="alert alert-danger mb-0">错误: ${task.error}</div>`;
                 }
             });
-    }, 1000);
+    }, 800);
+}
+
+function renderRunningTask(task) {
+    const results = task.results || [];
+    const total = task.total_tables || results.length || 21;
+    const done = results.length;
+    const pct = total > 0 ? Math.round(done / total * 100) : 0;
+    const rows = (task.rows || 0).toLocaleString();
+
+    let html = `
+    <div class="mb-2 d-flex align-items-center">
+        <div class="spinner-border spinner-border-sm me-2 text-primary"></div>
+        <strong>${task.progress || '运行中...'}</strong>
+        <span class="ms-auto small text-secondary">${done}/${total} 表 · ${rows} 行</span>
+    </div>
+    <div class="progress mb-2" style="height:4px">
+        <div class="progress-bar progress-bar-striped progress-bar-animated"
+             style="width:${pct}%"></div>
+    </div>`;
+
+    if (results.length > 0) {
+        html += '<div style="max-height:400px;overflow-y:auto"><table class="table table-sm table-borderless mb-0 small">';
+        results.slice().reverse().forEach(r => {
+            let badge, cls;
+            if (r.error) {
+                badge = '✗'; cls = 'text-danger';
+            } else if (r.skipped) {
+                badge = '—'; cls = 'text-secondary';
+            } else {
+                badge = '✓'; cls = 'text-success';
+            }
+            html += `<tr>
+                <td class="${cls}" style="width:20px">${badge}</td>
+                <td><code>${r.name}</code></td>
+                <td class="text-end text-secondary">${(r.rows||0).toLocaleString()} 行</td>
+                <td class="text-end text-secondary" style="width:60px">${r.elapsed}s</td>
+            </tr>`;
+        });
+        html += '</table></div>';
+    }
+    return html;
+}
+
+function renderDoneTask(task) {
+    const results = task.results || [];
+    const ok = task.ok || 0;
+    const failed = task.failed || 0;
+    const rows = (task.rows || 0).toLocaleString();
+
+    let html = `<div class="alert alert-success mb-2">
+        <strong>完成</strong> — ${ok} 成功`;
+    if (failed > 0) html += `, ${failed} 失败`;
+    html += `，共 ${rows} 行</div>`;
+
+    if (results.length > 0) {
+        html += '<div style="max-height:300px;overflow-y:auto"><table class="table table-sm mb-0 small"><thead><tr><th></th><th>表名</th><th>行数</th><th>耗时</th></tr></thead><tbody>';
+        results.forEach(r => {
+            let badge, cls;
+            if (r.error) {
+                badge = '✗'; cls = 'text-danger';
+            } else if (r.skipped) {
+                badge = '—'; cls = 'text-secondary';
+            } else {
+                badge = '✓'; cls = 'text-success';
+            }
+            html += `<tr>
+                <td class="${cls}">${badge}</td>
+                <td><code>${r.name}</code></td>
+                <td class="text-end">${(r.rows||0).toLocaleString()}</td>
+                <td class="text-end text-secondary">${r.elapsed}s</td>
+            </tr>`;
+        });
+        html += '</tbody></table></div>';
+    }
+    return html;
+}
+
+function resumeRunningTasks() {
+    // On page load, check for running or pending tasks and resume polling
+    fetch('/api/tasks')
+        .then(r => r.json())
+        .then(tasks => {
+            if (!tasks || tasks.length === 0) return;
+            // Check both 'running' and 'pending' — task may not have started yet
+            const active = tasks.find(t => t.status === 'running' || t.status === 'pending');
+            if (active) {
+                const panel = document.getElementById('task-panel');
+                if (panel) panel.style.display = 'block';
+                // Pre-populate progress if task already has results
+                const el = document.getElementById('task-progress');
+                if (active.results && active.results.length > 0) {
+                    el.innerHTML = renderRunningTask(active);
+                }
+                pollTask(active.id);
+            }
+        });
 }
 
 function loadTables() {
-    fetch('/api/tables')
-        .then(r => r.json())
-        .then(data => {
-            if (data.error) return;
-            data.categories.forEach(cat => {
+    // Load both table stats and system status in parallel
+    Promise.all([
+        fetch('/api/tables').then(r => r.json()),
+        fetch('/api/system-status').then(r => r.json()),
+    ]).then(([tableData, sysData]) => {
+        if (!tableData.error) {
+            tableData.categories.forEach(cat => {
                 cat.tables.forEach(t => {
                     const rowEl = document.getElementById(`rows-${t.name}`);
                     if (rowEl) rowEl.textContent = t.rows.toLocaleString();
@@ -189,7 +295,45 @@ function loadTables() {
                     }
                 });
             });
-        });
+        }
+
+        // Populate init/backfill badges
+        if (!sysData.error) {
+            // Init status per table
+            if (sysData.init) {
+                for (const [name, info] of Object.entries(sysData.init)) {
+                    const el = document.getElementById(`init-${name}`);
+                    if (el) {
+                        el.innerHTML = info.initialized
+                            ? `<span class="badge bg-success">✓</span>`
+                            : `<span class="badge bg-warning text-dark">✗</span>`;
+                    }
+                }
+            }
+
+            // Backfill badge for daily_ohlcv
+            const bfEl = document.getElementById('backfill-daily_ohlcv');
+            if (bfEl && sysData.backfill) {
+                bfEl.innerHTML = sysData.backfill.done
+                    ? `<span class="badge bg-success">✓</span>`
+                    : `<span class="badge bg-warning text-dark">待回补</span>`;
+            }
+
+            // Init summary banner
+            const summaryEl = document.getElementById('init-summary');
+            if (summaryEl) {
+                const allInit = sysData.all_initialized;
+                const bfDone = sysData.backfill && sysData.backfill.done;
+                if (allInit && bfDone) {
+                    summaryEl.innerHTML = `<span class="text-success">✓ 系统已初始化 & 历史已回补</span>`;
+                } else if (allInit) {
+                    summaryEl.innerHTML = `<span class="text-warning">⚠ 已初始化，待回补</span>`;
+                } else {
+                    summaryEl.innerHTML = `<span class="text-danger">✗ 系统未初始化，请先运行增量更新</span>`;
+                }
+            }
+        }
+    });
 }
 
 function loadRecentTasks() {
@@ -218,7 +362,7 @@ function loadRecentTasks() {
 }
 
 // Load on page load and auto-refresh
-document.addEventListener('DOMContentLoaded', () => { loadTables(); loadRecentTasks(); });
+document.addEventListener('DOMContentLoaded', () => { loadTables(); loadRecentTasks(); resumeRunningTasks(); });
 setInterval(loadRecentTasks, 10000);
 </script>
 {% endblock %}

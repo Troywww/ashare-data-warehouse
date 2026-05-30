@@ -19,17 +19,17 @@ logger = logging.getLogger(__name__)
 
 _FIELD_MAP = {
     "symbol": "股票代码",
-    "end_date": "期末日期",
     "publ_date": "最新公告日期",
     "eps": "每股收益",
     "roe": "净资产收益率",
-    "revenue": "营业总收入",
-    "profit": "净利润",
-    "revenue_yoy": "营业总收入同比增长率",
-    "profit_yoy": "净利润增长率",
+    "revenue": "营业总收入-营业总收入",
+    "profit": "净利润-净利润",
+    "revenue_yoy": "营业总收入-同比增长",
+    "profit_yoy": "净利润-同比增长",
     "bvps": "每股净资产",
     "operating_cashflow": "每股经营现金流量",
     "gross_margin": "销售毛利率",
+    "industry": "所处行业",
 }
 
 

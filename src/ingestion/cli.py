@@ -2,6 +2,7 @@
 
 Usage::
 
+    ingestion init                  # First-deploy initialization (3 phases)
     ingestion daily-update          # Run today's incremental update
     ingestion backfill              # Full history backfill
     ingestion status                # Show table row counts
@@ -83,6 +84,84 @@ def cmd_serve(args):
     app.run(host=host, port=port, debug=args.debug)
 
 
+def cmd_init(args):
+    """First-deploy initialization — 3-phase setup with dependency ordering.
+
+    Phase 1: foundation (backfill, small data)
+        trade_calendar + stock_universe
+
+    Phase 2: core data (xdxr backfill, rest incremental today-only)
+        xdxr_events → daily_ohlcv, daily_valuation, capital_flow,
+        northbound_flow, board_daily
+
+    Phase 3: reference data (backfill)
+        stock_classification, concept_blocks, fundamentals, holder_count
+
+    Historical OHLCV and valuation are NOT fetched — use `ingestion backfill`
+    for those on demand.
+    """
+    cfg = load_config(args.config)
+    _setup_logging(cfg.logging.level, cfg.logging.file)
+    engine = DailyUpdateEngine(cfg)
+    all_results = []
+    failed = False
+
+    # ---- Phase 1: Foundation (backfill, parallel) ----
+    logger.info("=" * 50)
+    logger.info("PHASE 1/3: Foundation — trade_calendar, stock_universe")
+    logger.info("=" * 50)
+    r1 = engine.run_backfill(tables=["trade_calendar", "stock_universe"])
+    all_results.extend(r1)
+    if any(r.error for r in r1):
+        logger.error("Phase 1 failed, aborting init")
+        _print_results(all_results)
+        sys.exit(1)
+    _print_results(r1)
+
+    # ---- Phase 2a: xdxr (backfill, small, needed for QFQ) ----
+    logger.info("=" * 50)
+    logger.info("PHASE 2a/3: xdxr_events backfill")
+    logger.info("=" * 50)
+    r2a = engine.run_backfill(tables=["xdxr_events"])
+    all_results.extend(r2a)
+
+    # ---- Phase 2b: Core daily (incremental, today only) ----
+    logger.info("=" * 50)
+    logger.info("PHASE 2b/3: Core daily — OHLCV, valuation, capital_flow, northbound, board_daily")
+    logger.info("=" * 50)
+    r2b = engine.run_daily_update(tables=[
+        "daily_ohlcv", "daily_valuation", "capital_flow",
+        "northbound_flow", "board_daily",
+    ])
+    all_results.extend(r2b)
+
+    # ---- Phase 3: Reference (backfill) ----
+    logger.info("=" * 50)
+    logger.info("PHASE 3/3: Reference — classification, concepts, fundamentals, holder_count")
+    logger.info("=" * 50)
+    r3 = engine.run_backfill(tables=[
+        "stock_classification", "concept_blocks",
+        "fundamentals", "holder_count",
+    ])
+    all_results.extend(r3)
+
+    # ---- Summary ----
+    logger.info("=" * 50)
+    logger.info("INIT COMPLETE")
+    logger.info("=" * 50)
+    _print_results(all_results)
+
+    ok = sum(1 for r in all_results if r.error is None and not r.skipped)
+    failed_count = sum(1 for r in all_results if r.error is not None)
+    logger.info(
+        "Init finished: %d ok, %d failed. "
+        "Run 'ingestion backfill --tables daily_ohlcv' for historical K-line.",
+        ok, failed_count,
+    )
+    if failed_count:
+        sys.exit(1)
+
+
 def _print_results(results):
     print(f"\n{'Fetcher':<25} {'Rows':>8} {'Time':>8} {'Status'}")
     print("-" * 50)
@@ -116,6 +195,7 @@ def main():
         "--tables", "-t", default=None,
         help="Comma-separated table names to backfill, e.g. daily_ohlcv,daily_valuation. Default: all",
     )
+    sub.add_parser("init", help="First-deploy initialization — 3-phase setup")
     sub.add_parser("status", help="Show table row counts")
     sub.add_parser("schedule", help="Start scheduled runner (Docker default)")
     serve_parser = sub.add_parser("serve", help="Start web control panel")
@@ -126,6 +206,7 @@ def main():
     args = parser.parse_args()
 
     dispatch = {
+        "init": cmd_init,
         "daily-update": cmd_daily_update,
         "backfill": cmd_backfill,
         "status": cmd_status,

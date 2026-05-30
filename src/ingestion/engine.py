@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from src.ingestion.config import Config
 from src.ingestion.db import IngestionDB
@@ -39,23 +39,14 @@ logger = logging.getLogger(__name__)
 # Dependency graph — execution waves
 # ---------------------------------------------------------------------------
 
-# Wave 0: No dependencies — can start immediately
-_WAVE_0 = ["trade_calendar", "stock_universe", "northbound_flow"]
-
-# Wave 1: Depends on stock_universe (and must wait for xdxr_events before daily_ohlcv)
-_WAVE_1_SEQ = [
-    "stock_classification",   # depends on stock_universe
-    "concept_blocks",         # depends on stock_universe
-    "xdxr_events",            # depends on stock_universe
-    "daily_ohlcv",            # depends on stock_universe + xdxr_events
-    "daily_valuation",        # depends on stock_universe
-    "capital_flow",           # depends on stock_universe
-]
-
-# Wave 2: Fully independent signal/low-freq fetchers — all parallel
-_WAVE_2 = [
-    "dragon_tiger",
+# Wave 0: No dependencies — can start immediately (parallel)
+_WAVE_0 = [
+    "stock_universe",
+    "trade_calendar",
+    "global_markets",
+    "northbound_flow",
     "board_daily",
+    "dragon_tiger",
     "hot_stocks",
     "hot_reasons",
     "margin_trading",
@@ -63,33 +54,57 @@ _WAVE_2 = [
     "lockup_calendar",
     "holder_count",
     "fundamentals",
-    "global_markets",
 ]
 
+# Wave 1: xdxr → ohlcv chain (sequential — ohlcv adjusts prices with xdxr data)
+# Both depend on stock_universe which is guaranteed done after Wave 0
+_WAVE_1_SEQ = [
+    "xdxr_events",
+    "daily_ohlcv",
+]
+
+# Wave 2: Depends on Wave 0+1 — parallel
+#   stock_universe → daily_valuation, capital_flow, stock_classification,
+#                    concept_blocks, shareholder_changes
+#   daily_ohlcv   → indicator_values
+_WAVE_2 = [
+    "daily_valuation",
+    "capital_flow",
+    "stock_classification",
+    "concept_blocks",
+    "indicator_values",
+]
+# Note: shareholder_changes excluded — hard 200-stock limit, use DataService on-demand.
+
+# Wave 3: Reserved for future post-processing.
+_WAVE_3: list[str] = []
+
 # All fetchers in execution order (for display / backfill compatibility)
-_FETCHER_ORDER = _WAVE_0 + _WAVE_1_SEQ + _WAVE_2
+_FETCHER_ORDER = _WAVE_0 + _WAVE_1_SEQ + _WAVE_2 + _WAVE_3
 
 # Map fetcher registry name -> config source toggle
 _FETCHER_SOURCE_MAP = {
     "trade_calendar": "baostock",
-    "stock_universe": "opentdx",
-    "stock_classification": "opentdx",
-    "concept_blocks": "opentdx",
-    "daily_ohlcv": "opentdx",
+    "stock_universe": "easy_tdx",
+    "stock_classification": "easy_tdx",
+    "concept_blocks": "easy_tdx",
+    "daily_ohlcv": "easy_tdx",
     "daily_valuation": "tencent_api",
-    "capital_flow": "eastmoney",
+    "capital_flow": "easy_tdx",
     "northbound_flow": "eastmoney",
     "dragon_tiger": "akshare",
-    "board_daily": "akshare",
+    "board_daily": "easy_tdx",
     "hot_stocks": "akshare",
-    "hot_reasons": "akshare",
+    "hot_reasons": "ths",
     "margin_trading": "akshare",
     "block_trades": "eastmoney",
     "lockup_calendar": "eastmoney",
     "holder_count": "eastmoney",
     "fundamentals": "akshare",
-    "global_markets": "opentdx",
+    "global_markets": "easy_tdx",
     "xdxr_events": "eastmoney",
+    "indicator_values": "easy_tdx",
+    "shareholder_changes": "akshare",
 }
 
 # Max parallel workers for network fetch
@@ -129,7 +144,9 @@ class DailyUpdateEngine:
     # ------------------------------------------------------------------
 
     def run_daily_update(self, trade_date: Optional[date] = None, backfill: bool = False,
-                         tables: list[str] | None = None) -> list[FetcherResult]:
+                         tables: list[str] | None = None,
+                         progress_callback: Callable[[FetcherResult], None] | None = None,
+                         ) -> list[FetcherResult]:
         """Run the full daily update pipeline.
 
         Parameters
@@ -140,6 +157,9 @@ class DailyUpdateEngine:
             If True, fetch full history instead of incremental.
         tables : list[str], optional
             Only run these fetchers (by registry name). None = all.
+        progress_callback : callable, optional
+            Called after each fetcher completes with its FetcherResult.
+            Useful for live progress reporting in web UIs.
 
         Returns
         -------
@@ -167,24 +187,38 @@ class DailyUpdateEngine:
             # Used by scheduler per-table triggers and frontend manual runs.
             # Dependencies are assumed to be already satisfied in DB from previous runs.
             logger.info("--- Targeted: %s ---", ", ".join(tables))
-            targeted = self._run_wave(tables, trade_date, parallel=True)
+            targeted = self._run_wave(tables, trade_date, parallel=True,
+                                      progress_callback=progress_callback)
             results.extend(targeted)
         else:
             # --- Full mode: wave-based execution respecting dependency order ---
             # --- Wave 0: Independent fetchers (parallel) ---
             logger.info("--- Wave 0: %s ---", ", ".join(_WAVE_0))
-            wave0_results = self._run_wave(_WAVE_0, trade_date)
+            wave0_results = self._run_wave(_WAVE_0, trade_date,
+                                           progress_callback=progress_callback)
             results.extend(wave0_results)
 
             # --- Wave 1: Depends on stock_universe (sequential) ---
             logger.info("--- Wave 1: %s ---", ", ".join(_WAVE_1_SEQ))
-            wave1_results = self._run_wave(_WAVE_1_SEQ, trade_date, parallel=False)
+            wave1_results = self._run_wave(_WAVE_1_SEQ, trade_date, parallel=False,
+                                           progress_callback=progress_callback)
             results.extend(wave1_results)
 
             # --- Wave 2: Independent signal/low-freq (parallel) ---
             logger.info("--- Wave 2: %s ---", ", ".join(_WAVE_2))
-            wave2_results = self._run_wave(_WAVE_2, trade_date)
+            wave2_results = self._run_wave(_WAVE_2, trade_date,
+                                           progress_callback=progress_callback)
             results.extend(wave2_results)
+
+            # --- Wave 3: Pre-compute indicators (after data ready) ---
+            if not backfill:
+                logger.info("--- Wave 3: %s ---", ", ".join(_WAVE_3))
+                wave3_results = self._run_wave(_WAVE_3, trade_date, parallel=False,
+                                               progress_callback=progress_callback)
+                results.extend(wave3_results)
+
+                # After data ingestion, clear DataService cache so agents get fresh data
+                self._clear_data_service_cache()
 
         total_elapsed = time.perf_counter() - t_start
         ok = sum(1 for r in results if r.error is None and not r.skipped)
@@ -202,10 +236,13 @@ class DailyUpdateEngine:
 
         return results
 
-    def run_backfill(self, tables: list[str] | None = None) -> list[FetcherResult]:
+    def run_backfill(self, tables: list[str] | None = None,
+                     progress_callback: Callable[[FetcherResult], None] | None = None,
+                     ) -> list[FetcherResult]:
         """Run a full backfill for specified tables (or all if None)."""
         logger.info("=== Backfill start === tables=%s", tables or "all")
-        return self.run_daily_update(backfill=True, tables=tables)
+        return self.run_daily_update(backfill=True, tables=tables,
+                                     progress_callback=progress_callback)
 
     def status(self) -> dict[str, int]:
         """Return row counts for all tables."""
@@ -217,7 +254,9 @@ class DailyUpdateEngine:
     # ------------------------------------------------------------------
 
     def _run_wave(self, names: list[str], trade_date: date,
-                  parallel: bool = True) -> list[FetcherResult]:
+                  parallel: bool = True,
+                  progress_callback: Callable[[FetcherResult], None] | None = None,
+                  ) -> list[FetcherResult]:
         """Run a wave of fetchers — parallel or sequential."""
         # Filter and check
         tasks: list[tuple[str, FetcherEntry]] = []
@@ -226,12 +265,18 @@ class DailyUpdateEngine:
         for name in names:
             if name not in FETCHER_REGISTRY:
                 logger.warning("Unknown fetcher: %s", name)
-                skipped.append(FetcherResult(name=name, rows=0, elapsed=0, skipped=True))
+                r = FetcherResult(name=name, rows=0, elapsed=0, skipped=True)
+                skipped.append(r)
+                if progress_callback:
+                    progress_callback(r)
                 continue
             entry = FETCHER_REGISTRY[name]
 
             if not self._source_enabled(name):
-                skipped.append(FetcherResult(name=name, rows=0, elapsed=0, skipped=True))
+                r = FetcherResult(name=name, rows=0, elapsed=0, skipped=True)
+                skipped.append(r)
+                if progress_callback:
+                    progress_callback(r)
                 continue
 
             tasks.append((name, entry))
@@ -240,14 +285,18 @@ class DailyUpdateEngine:
             return skipped
 
         if parallel and len(tasks) > 1:
-            results = self._run_parallel(tasks, trade_date)
+            results = self._run_parallel(tasks, trade_date,
+                                         progress_callback=progress_callback)
         else:
-            results = self._run_sequential(tasks, trade_date)
+            results = self._run_sequential(tasks, trade_date,
+                                           progress_callback=progress_callback)
 
         return skipped + results
 
     def _run_sequential(self, tasks: list[tuple[str, FetcherEntry]],
-                        trade_date: date) -> list[FetcherResult]:
+                        trade_date: date,
+                        progress_callback: Callable[[FetcherResult], None] | None = None,
+                        ) -> list[FetcherResult]:
         """Run fetchers one by one."""
         results = []
         with IngestionDB(self.config.db_path) as db:
@@ -256,15 +305,20 @@ class DailyUpdateEngine:
                 try:
                     rows = run_fetcher(db, self.config, trade_date, name)
                     elapsed = time.perf_counter() - t0
-                    results.append(FetcherResult(name=name, rows=rows, elapsed=elapsed))
+                    r = FetcherResult(name=name, rows=rows, elapsed=elapsed)
                 except Exception as e:
                     elapsed = time.perf_counter() - t0
                     logger.error("  x %s failed after %.1fs: %s", name, elapsed, e)
-                    results.append(FetcherResult(name=name, rows=0, elapsed=elapsed, error=str(e)))
+                    r = FetcherResult(name=name, rows=0, elapsed=elapsed, error=str(e))
+                results.append(r)
+                if progress_callback:
+                    progress_callback(r)
         return results
 
     def _run_parallel(self, tasks: list[tuple[str, FetcherEntry]],
-                      trade_date: date) -> list[FetcherResult]:
+                      trade_date: date,
+                      progress_callback: Callable[[FetcherResult], None] | None = None,
+                      ) -> list[FetcherResult]:
         """Run fetchers in parallel — each gets its own DB connection for writing.
 
         DuckDB serializes writes internally (single-writer lock), so concurrent
@@ -296,6 +350,8 @@ class DailyUpdateEngine:
             for future in as_completed(futures):
                 idx, result = future.result()
                 results[idx] = result
+                if progress_callback:
+                    progress_callback(result)
 
         return results
 
@@ -352,3 +408,16 @@ class DailyUpdateEngine:
             json.dump(progress, f, ensure_ascii=False, indent=2)
 
         logger.debug("Progress saved to %s", progress_path)
+
+    def _clear_data_service_cache(self) -> None:
+        """Clear DataService cache after pipeline ingestion completes.
+
+        Called after Wave 3 to ensure agents always see fresh data.
+        """
+        try:
+            from src.ingestion.service import DataService
+            svc = DataService(self.config.db_path)
+            cleared = svc.invalidate_all()
+            logger.info("DataService cache cleared: %d entries", cleared)
+        except Exception as e:
+            logger.debug("Cache clear skipped: %s", e)

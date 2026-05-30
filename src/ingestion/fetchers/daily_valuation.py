@@ -161,8 +161,9 @@ def _baostock_single(symbols: list[str], db_path: str, start: int, end: int) -> 
 def _fetch_baostock_history(symbols: list[str], db_path: str, thread_pool: int = 1) -> int:
     """Fetch valuation history via baostock (sequential, incremental DB writes).
 
-    baostock uses a global session, so queries run sequentially with a lock.
-    Writes to DB every 50K rows — safe to interrupt and resume.
+    baostock uses a global session that is NOT thread-safe — concurrent queries
+    in multiple threads cause session overwrites → Bad file descriptor.
+    We run batches sequentially to avoid this.
     """
     total = 0
     done = set()
@@ -186,30 +187,23 @@ def _fetch_baostock_history(symbols: list[str], db_path: str, thread_pool: int =
 
     logger.info("valuation backfill: %d/%d stocks to fetch", len(to_fetch), len(symbols))
 
-    # Parallel: split into batches, run in thread pool (baostock uses per-thread login)
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
+    # Sequential: baostock global session is NOT thread-safe
     batch_size = 100
     batches = []
     for start in range(0, len(to_fetch), batch_size):
         end = min(start + batch_size, len(to_fetch))
         batches.append((to_fetch, db_path, start, end))
 
-    n_workers = min(config.thread_pool, len(batches), 4)
-    logger.info("valuation backfill: %d batches, %d workers", len(batches), n_workers)
+    logger.info("valuation backfill: %d batches, sequential (baostock not thread-safe)", len(batches))
 
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        fut_map = {pool.submit(_baostock_single, *b): b for b in batches}
-        done_batches = 0
-        for fut in as_completed(fut_map):
-            done_batches += 1
-            try:
-                n = fut.result()
-                total += n
-                logger.info("valuation backfill: batch %d/%d done (%d rows total, %d rows this batch)",
-                            done_batches, len(batches), total, n)
-            except Exception as e:
-                logger.error("valuation backfill: batch failed: %s", e)
+    for i, b in enumerate(batches):
+        try:
+            n = _baostock_single(*b)
+            total += n
+            logger.info("valuation backfill: batch %d/%d done (%d rows total, %d rows this batch)",
+                        i + 1, len(batches), total, n)
+        except Exception as e:
+            logger.error("valuation backfill: batch %d failed: %s", i + 1, e)
 
     return total
 

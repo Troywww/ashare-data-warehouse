@@ -81,9 +81,10 @@ results.append(audit("concept_blocks", sample_cols="symbol, concept_name"))
 
 # === P0: OHLCV ===
 print("\n--- daily_ohlcv (分批, 只测5只) ---")
-from src.ingestion.fetchers.daily_ohlcv import _fetch_single_opentdx
+from src.ingestion.fetchers.daily_ohlcv import _fetch_batch_easy_tdx
 for sym in ["600519", "000001", "300750", "920000"]:
-    rows = _fetch_single_opentdx(sym, 5)
+    rows_df = _fetch_batch_easy_tdx([sym], 5)
+    rows = rows_df.to_dict("records") if not rows_df.empty else []
     print(f"  {sym}: {len(rows)} days")
     if rows:
         print(f"    {rows[0]['date']}~{rows[-1]['date']}, close: {rows[-1]['close']}, vol: {rows[-1]['volume']}")

@@ -44,6 +44,11 @@ function loadStats() {
             });
             html += `</div>`;
 
+            // System status cards (loaded from /api/system-status)
+            html += `<div id="sys-status-cards" class="row g-2 mb-3">
+                <div class="col-12 text-center"><div class="spinner-border spinner-border-sm text-secondary"></div></div>
+            </div>`;
+
             // Last update
             if (data.progress && data.progress.last_daily_update) {
                 html += `<div class="alert alert-info py-2 mb-3">
@@ -91,6 +96,9 @@ function loadStats() {
 
             panel.innerHTML = html;
             updateSidebarStatus(data.progress);
+
+            // Load system status into the placeholder cards
+            loadSystemStatusCards();
         })
         .catch(err => {
             panel.innerHTML = `<div class="alert alert-danger">加载失败: ${err.message}</div>`;
@@ -107,6 +115,38 @@ function updateSidebarStatus(progress) {
     } else {
         el.innerHTML = `更新: <span class="badge bg-warning">暂无</span>`;
     }
+}
+
+function loadSystemStatusCards() {
+    fetch('/api/system-status')
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) return;
+            const el = document.getElementById('sys-status-cards');
+            if (!el) return;
+
+            const allInit = data.all_initialized;
+            const backfillDone = data.backfill && data.backfill.done;
+            const ohlcvRows = (data.backfill && data.backfill.daily_ohlcv_rows || 0).toLocaleString();
+            const ohlcvStocks = (data.backfill && data.backfill.stocks_with_data || 0).toLocaleString();
+
+            let html = '';
+            const cards = [
+                {label: '初始化', value: allInit ? '✓ 完成' : '⚠ 未完成', color: allInit ? 'success' : 'warning', hint: 'stock_universe/trade_calendar/daily_ohlcv/daily_valuation'},
+                {label: '历史回补', value: backfillDone ? '✓ 完成' : '⚠ 待回补', color: backfillDone ? 'success' : 'warning', hint: `日线 ${ohlcvRows} 行 / ${ohlcvStocks} 股`},
+                {label: '自动更新', value: data.schedule ? '✓ 已配置' : '⚠ 未配置', color: data.schedule ? 'success' : 'secondary', hint: Object.keys(data.schedule||{}).join(', ')},
+            ];
+            cards.forEach(c => {
+                html += `<div class="col-md-4"><div class="card stat-card border-${c.color}" title="${c.hint}">
+                    <div class="card-body py-2">
+                        <div class="small text-secondary">${c.label}</div>
+                        <div class="number text-${c.color}">${c.value}</div>
+                    </div>
+                </div></div>`;
+            });
+            el.innerHTML = html;
+        })
+        .catch(() => {});
 }
 
 // Auto load on page load

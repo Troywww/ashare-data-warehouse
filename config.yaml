@@ -7,22 +7,21 @@ logging:
   level: INFO
 schedule:
   core: '16:00'
-  fundamentals: quarterly 10:00
-  global_markets: 09:00
-  holder_count: monthly 10:00
   signals: '17:00'
+  global_markets: '09:00'
+  weekly: 'weekly 10:00'
+  fundamentals: monthly 10:00
+  holder_count: monthly 10:00
   trade_calendar: yearly 10:00
 schedule_groups:
   core:
   - stock_universe
-  - stock_classification
-  - concept_blocks
+  - xdxr_events
   - daily_ohlcv
   - daily_valuation
   - capital_flow
   - northbound_flow
   - board_daily
-  - xdxr_events
   signals:
   - dragon_tiger
   - hot_stocks
@@ -30,10 +29,19 @@ schedule_groups:
   - margin_trading
   - block_trades
   - lockup_calendar
+  - indicator_values
+  weekly:
+  - stock_classification
+  - concept_blocks
 sources:
   akshare: true
   baostock: true
   eastmoney: true
-  opentdx: true
+  easy_tdx: true
   tencent_api: true
-thread_pool: 8
+thread_pool: 4
+
+# DataService 缓存配置
+trading_hours:
+  start: "09:30"
+  end: "15:00"

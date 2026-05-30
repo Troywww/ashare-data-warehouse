@@ -1,86 +1,126 @@
-"""Fetcher: capital_flow — 个股资金流向.
+"""Fetcher: capital_flow — 个股资金流向（主力净流入/超大单/大单/中单/小单）.
 
-Source: opentdx stock_capital_flow (TCP, 通达信)
-Fields: net_main(当日主力), net_super_5d/large_5d/medium_5d/small_5d(5日累计)
+Source: easy_tdx TdxClient.get_fund_flow (TCP, 通达信标准协议)
+Optimization: ONE persistent TdxClient per worker thread (vs old per-30-stock reconnect).
+Schedule: daily, incremental (today only)
 """
 from __future__ import annotations
 
 import logging
-import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 
 import pandas as pd
-from opentdx.const import MARKET
-from opentdx.tdxClient import TdxClient
+from easy_tdx import TdxClient
+from easy_tdx.models.enums import Market
 
 from src.ingestion.config import Config
 from src.ingestion.db import IngestionDB
-from src.ingestion.fetchers import register_fetcher, retry
+from src.ingestion.fetchers import register_fetcher
 
 logger = logging.getLogger(__name__)
 
+# Each worker thread gets a chunk of stocks to query with its own TdxClient.
+# BATCH_SIZE is informational for progress reporting only.
+_CHUNK_SIZE = 500
 
-def _market(symbol: str) -> int:
+
+def _market(symbol: str) -> Market:
+    """Map 6-digit symbol to easy_tdx Market enum."""
     if symbol.startswith(("6", "68")):
-        return MARKET.SH
+        return Market.SH
     if symbol.startswith("92"):
-        return MARKET.BJ
-    return MARKET.SZ
+        return Market.BJ
+    return Market.SZ
 
 
-def _fetch_capital_flow(symbols: list[str]) -> pd.DataFrame:
-    """Fetch capital flow for all stocks, reusing TdxClient."""
-    rows = []
-    client = None
+def _fetch_capital_flow(symbols: list[str], max_workers: int = 4) -> pd.DataFrame:
+    """Fetch capital flow for all stocks with persistent TdxClient per worker.
 
-    for i, sym in enumerate(symbols):
-        for attempt in range(2):
-            try:
-                if client is None:
-                    client = TdxClient()
-                    client.__enter__()
-                result = client.stock_capital_flow(_market(sym), sym)
-                data = result.get("data", {})
-                if data:
-                    rows.append({
-                        "symbol": sym,
-                        "net_main": float(data.get("今日主力净流入", 0) or 0),
-                        "net_super_5d": float(data.get("5日超大单净额", 0) or 0),
-                        "net_large_5d": float(data.get("5日大单净额", 0) or 0),
-                        "net_medium_5d": float(data.get("5日中单净额", 0) or 0),
-                        "net_small_5d": float(data.get("5日小单净额", 0) or 0),
-                    })
-                break
-            except Exception as e:
-                if client is not None:
-                    try:
-                        client.__exit__(None, None, None)
-                    except Exception:
-                        pass
-                    client = None
-                if attempt < 1:
-                    continue
-                logger.debug("capital_flow %s failed: %s", sym, e)
-
-        if (i + 1) % 1000 == 0:
-            logger.info("capital_flow: %d/%d done", i + 1, len(symbols))
-
-    if client is not None:
-        try:
-            client.__exit__(None, None, None)
-        except Exception:
-            pass
-
-    if not rows:
+    Each worker gets its own TdxClient connection and processes a chunk of
+    stocks sequentially. This avoids the old pattern of creating a new client
+    per 30-stock batch (185 connection handshakes → ~4 handshakes).
+    """
+    if not symbols:
         return pd.DataFrame()
-    return pd.DataFrame(rows)
+
+    n = len(symbols)
+    chunk_size = max(_CHUNK_SIZE, (n + max_workers - 1) // max_workers)
+    chunks = [symbols[i:i + chunk_size] for i in range(0, n, chunk_size)]
+    total_chunks = len(chunks)
+
+    all_rows: list[dict] = []
+    _lock = threading.Lock()
+    _done_count = [0]
+    _err_count = [0]
+
+    def _fetch_chunk(chunk: list[str], worker_id: int) -> list[dict]:
+        """Fetch one chunk with a single persistent TdxClient connection."""
+        rows: list[dict] = []
+        try:
+            with TdxClient.from_best_host() as client:
+                for sym in chunk:
+                    try:
+                        mkt = _market(sym)
+                        flow = client.get_fund_flow(mkt, sym)
+                        if flow.empty:
+                            continue
+                        row = flow.iloc[0]
+                        rows.append({
+                            "symbol": sym,
+                            "net_main": (
+                                (row["super_in"] + row["large_in"])
+                                - (row["super_out"] + row["large_out"])
+                            ),
+                            "net_super": row["super_in"] - row["super_out"],
+                            "net_large": row["large_in"] - row["large_out"],
+                            "net_medium": row["medium_in"] - row["medium_out"],
+                            "net_small": row["small_in"] - row["small_out"],
+                        })
+                    except Exception:
+                        _err_count[0] += 1
+            return rows
+        except Exception:
+            _err_count[0] += 1
+            return rows
+
+    if max_workers <= 1:
+        for ci, chunk in enumerate(chunks):
+            rows = _fetch_chunk(chunk, 0)
+            all_rows.extend(rows)
+            logger.info("capital_flow: chunk %d/%d done (%d rows, %d errors)",
+                        ci + 1, total_chunks, len(all_rows), _err_count[0])
+    else:
+        def _worker(idx: int) -> None:
+            rows = _fetch_chunk(chunks[idx], idx)
+            with _lock:
+                all_rows.extend(rows)
+                _done_count[0] += 1
+                logger.info("capital_flow: chunk %d/%d done (%d rows, %d errors)",
+                            _done_count[0], total_chunks, len(all_rows), _err_count[0])
+
+        with ThreadPoolExecutor(max_workers=min(max_workers, total_chunks)) as pool:
+            futures = [pool.submit(_worker, i) for i in range(total_chunks)]
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception:
+                    _err_count[0] += 1
+
+    if _err_count[0]:
+        logger.warning("capital_flow: %d per-stock errors", _err_count[0])
+
+    if not all_rows:
+        return pd.DataFrame()
+    return pd.DataFrame(all_rows)
 
 
 @register_fetcher(
     "capital_flow",
     depends_on=["stock_universe"],
     group="core",
-    description="个股资金流向 — opentdx stock_capital_flow 复用连接",
+    description="个股资金流向 — easy_tdx get_fund_flow（持久连接优化）",
 )
 def fetch(db: IngestionDB, config: Config, trade_date: date) -> int:
     """Fetch and persist daily capital flow data."""
@@ -90,7 +130,7 @@ def fetch(db: IngestionDB, config: Config, trade_date: date) -> int:
     if not symbols:
         return 0
 
-    df = _fetch_capital_flow(symbols)
+    df = _fetch_capital_flow(symbols, max_workers=config.thread_pool)
     if df.empty:
         return 0
 

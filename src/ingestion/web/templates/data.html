@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% block title %}数据与缓存 — A股数据仓库{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="m-0">💾 数据与缓存</h4>
+    <button class="btn btn-sm btn-outline-secondary" onclick="loadAll()">刷新</button>
+</div>
+
+<!-- 系统状态卡片 -->
+<div id="status-cards" class="row g-2 mb-3"></div>
+
+<!-- 按需获取数据（DataService policies + 缓存） -->
+<div class="card mb-3">
+    <div class="card-header py-2 d-flex justify-content-between align-items-center">
+        <strong>📡 按需获取数据（DataService）</strong>
+        <span class="small text-secondary">通过 MCP 工具或 API 触发，自动缓存</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>数据类型</th>
+                        <th>数据库表</th>
+                        <th>行数</th>
+                        <th>数据源</th>
+                        <th>交易时段</th>
+                        <th>收盘后</th>
+                        <th>模式</th>
+                    </tr>
+                </thead>
+                <tbody id="on-demand-body">
+                    <tr><td colspan="7" class="text-center text-secondary">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 缓存实时数据 -->
+<div class="card mb-3">
+    <div class="card-header py-2 d-flex justify-content-between align-items-center">
+        <strong>⚡ 实时数据缓存</strong>
+        <span class="small text-secondary">纯内存缓存，不写库</span>
+    </div>
+    <div class="card-body p-0">
+        <table class="table table-sm table-hover mb-0">
+            <thead>
+                <tr><th>数据类型</th><th>数据源</th><th>交易时段TTL</th><th>收盘后TTL</th></tr></thead>
+            <tbody id="realtime-body">
+                <tr><td colspan="4" class="text-center text-secondary">加载中...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 缓存统计 -->
+<div class="card mb-3">
+    <div class="card-header py-2"><strong>📊 缓存运行统计</strong></div>
+    <div class="card-body" id="cache-stats-body">
+        <div class="text-center text-secondary">加载中...</div>
+    </div>
+</div>
+
+<!-- 数据库总览 -->
+<div class="card mb-3">
+    <div class="card-header py-2 d-flex justify-content-between align-items-center">
+        <strong>🗄️ 数据库表清单</strong>
+        <span class="small text-secondary" id="db-table-count"></span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0">
+                <thead>
+                    <tr><th>表名</th><th style="width:100px">行数</th><th style="width:130px">最新日期</th><th>存储类型</th></tr>
+                </thead>
+                <tbody id="db-tables-body">
+                    <tr><td colspan="4" class="text-center text-secondary">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+function loadAll() {
+    loadSystemStatus();
+    loadCacheStats();
+}
+
+function loadSystemStatus() {
+    fetch('/api/system-status')
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) return;
+
+            // Status cards
+            const cardsEl = document.getElementById('status-cards');
+            const allInit = data.all_initialized;
+            const backfillDone = data.backfill && data.backfill.done;
+            const ohlcvRows = (data.backfill && data.backfill.daily_ohlcv_rows || 0).toLocaleString();
+            const ohlcvStocks = (data.backfill && data.backfill.stocks_with_data || 0).toLocaleString();
+
+            const cards = [
+                {label: '初始化状态', value: allInit ? '✓ 已完成' : '⚠ 未完成', color: allInit ? 'success' : 'warning'},
+                {label: '历史回补', value: backfillDone ? '✓ 已完成' : '⚠ 未完成', color: backfillDone ? 'success' : 'warning'},
+                {label: '日线数据', value: `${ohlcvRows} 行 / ${ohlcvStocks} 股`, color: backfillDone ? 'info' : 'secondary'},
+            ];
+            let cardHtml = '';
+            cards.forEach(c => {
+                cardHtml += `<div class="col-md-4"><div class="card stat-card border-${c.color}">
+                    <div class="card-body py-2">
+                        <div class="small text-secondary">${c.label}</div>
+                        <div class="number text-${c.color}">${c.value}</div>
+                    </div>
+                </div></div>`;
+            });
+            cardsEl.innerHTML = cardHtml;
+
+            // Init detail
+            if (!allInit && data.init) {
+                const missing = Object.entries(data.init).filter(([,v]) => !v.initialized).map(([k,v]) => `<code>${k}</code>`).join(', ');
+                cardsEl.innerHTML += `<div class="col-12 mt-1">
+                    <div class="alert alert-warning py-1 mb-0 small">待初始化: ${missing || '无'}</div>
+                </div>`;
+            }
+
+            // On-demand table rows
+            const onDemandBody = document.getElementById('on-demand-body');
+            if (data.on_demand) {
+                let html = '';
+                const entries = Object.entries(data.on_demand).sort((a,b) => a[0].localeCompare(b[0]));
+                entries.forEach(([name, info]) => {
+                    const ttlTrading = info.trading_ttl > 60 ? `${Math.round(info.trading_ttl/60)}分` : `${info.trading_ttl}秒`;
+                    const ttlClosed = info.closed_ttl ? (info.closed_ttl > 3600 ? `${Math.round(info.closed_ttl/3600)}时` : `${Math.round(info.closed_ttl/60)}分`) : '不过期';
+                    html += `<tr>
+                        <td><code>${name}</code></td>
+                        <td><code>${info.db_table || '-'}</code></td>
+                        <td>${(info.rows || 0).toLocaleString()}</td>
+                        <td class="small">${info.source}</td>
+                        <td class="small">${ttlTrading}</td>
+                        <td class="small">${ttlClosed}</td>
+                        <td><span class="badge bg-info">查DB→拉源→缓存</span></td>
+                    </tr>`;
+                });
+                onDemandBody.innerHTML = html || '<tr><td colspan="7" class="text-center text-secondary">暂无数据</td></tr>';
+            }
+
+            // Real-time cache body
+            const rtBody = document.getElementById('realtime-body');
+            // These are from POLICIES (pure cache, no persist)
+            const realtimeTypes = {
+                'realtime_quote': {desc: '个股实时行情', ttl: '3秒', closed: '1小时', source: 'easy_tdx'},
+                'realtime_quotes': {desc: '批量实时行情', ttl: '3秒', closed: '1小时', source: 'easy_tdx'},
+                'intraday_kline_1min': {desc: '分钟K线(1分)', ttl: '30秒', closed: '不过期', source: 'easy_tdx'},
+                'intraday_kline_5min': {desc: '分钟K线(5分)', ttl: '2分', closed: '不过期', source: 'easy_tdx'},
+                'limit_up_ladder': {desc: '涨停梯队', ttl: '30秒', closed: '不过期', source: 'easy_tdx'},
+                'realtime_index': {desc: '实时指数', ttl: '3秒', closed: '1小时', source: 'tencent'},
+            };
+            let rtHtml = '';
+            Object.entries(realtimeTypes).forEach(([name, info]) => {
+                rtHtml += `<tr>
+                    <td><code>${name}</code> <span class="small text-secondary">${info.desc}</span></td>
+                    <td class="small">${info.source}</td>
+                    <td class="small">${info.ttl}</td>
+                    <td class="small">${info.closed}</td>
+                </tr>`;
+            });
+            rtBody.innerHTML = rtHtml;
+
+            // DB tables
+            const dbBody = document.getElementById('db-tables-body');
+            if (data.total_tables_in_db) {
+                document.getElementById('db-table-count').textContent = `共 ${data.total_tables_in_db} 张表`;
+            }
+            // Load DB stats from /api/stats for the full table list
+            fetch('/api/stats')
+                .then(r => r.json())
+                .then(stats => {
+                    if (stats.error || !stats.rows) return;
+                    let tbHtml = '';
+                    const sorted = Object.entries(stats.rows).sort((a,b) => a[0].localeCompare(b[0]));
+                    sorted.forEach(([name, count]) => {
+                        const maxDate = stats.max_dates?.[name] || '-';
+                        // Determine storage type
+                        let storageType = '定时写入';
+                        if (['cls_telegram', 'stock_news', 'announcements', 'research_reports', 'eps_consensus', 'shareholder_changes', 'dragon_tiger_seats'].includes(name)) {
+                            storageType = '按需拉取';
+                        } else if (name === 'indicator_values') {
+                            storageType = '计算写入 (D/W/M)';
+                        }
+                        tbHtml += `<tr>
+                            <td><code>${name}</code></td>
+                            <td>${count.toLocaleString()}</td>
+                            <td class="small">${maxDate}</td>
+                            <td><span class="badge bg-secondary">${storageType}</span></td>
+                        </tr>`;
+                    });
+                    dbBody.innerHTML = tbHtml || '<tr><td colspan="4" class="text-center text-secondary">无数据</td></tr>';
+                });
+        });
+}
+
+function loadCacheStats() {
+    fetch('/api/cache-stats')
+        .then(r => r.json())
+        .then(data => {
+            const body = document.getElementById('cache-stats-body');
+            if (data.error && !data.cache_enabled) {
+                body.innerHTML = `<div class="alert alert-secondary mb-0">缓存未启用 — DataService 缓存仅在 MCP Server 进程中运行</div>
+                    <p class="small text-secondary mt-2 mb-0">Web 面板和 MCP Server 是独立进程，缓存统计在此处不可用。</p>`;
+                return;
+            }
+            if (data.error) {
+                body.innerHTML = `<div class="alert alert-warning mb-0">${data.error}</div>`;
+                return;
+            }
+            body.innerHTML = `<div class="row g-2">
+                <div class="col-3"><div class="card stat-card border-info"><div class="card-body py-2 text-center">
+                    <div class="small text-secondary">总条目</div>
+                    <div class="number text-info">${data.total_entries || 0}</div>
+                </div></div></div>
+                <div class="col-3"><div class="card stat-card border-success"><div class="card-body py-2 text-center">
+                    <div class="small text-secondary">有效</div>
+                    <div class="number text-success">${data.valid || 0}</div>
+                </div></div></div>
+                <div class="col-3"><div class="card stat-card border-warning"><div class="card-body py-2 text-center">
+                    <div class="small text-secondary">过期</div>
+                    <div class="number text-warning">${data.expired || 0}</div>
+                </div></div></div>
+                <div class="col-3"><div class="card stat-card border-secondary"><div class="card-body py-2 text-center">
+                    <div class="small text-secondary">等待中</div>
+                    <div class="number text-secondary">${data.pending_requests || 0}</div>
+                </div></div></div>
+            </div>`;
+        })
+        .catch(err => {
+            document.getElementById('cache-stats-body').innerHTML =
+                `<div class="alert alert-secondary mb-0">缓存统计不可用（Web 与 MCP Server 独立进程）</div>`;
+        });
+}
+
+document.addEventListener('DOMContentLoaded', loadAll);
+</script>
+{% endblock %}

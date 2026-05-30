@@ -5,7 +5,7 @@
 | 项目 | 说明 |
 |------|------|
 | 存储引擎 | DuckDB |
-| 表数量 | 19 张 |
+| 表数量 | 27 张 |
 | 核心数据源 | OpenTDX(opentdx) / baostock / 腾讯API / 东财datacenter / akshare / 同花顺 |
 | 更新方式 | 每日增量 daily-update，一次性 backfill |
 
@@ -32,15 +32,21 @@
 | | `block_trades` | 大宗交易（成交价/折溢价/营业部） | 每交易日 17:00 |
 | | `holder_count` | 股东户数（筹码集中度） | 每月月初 |
 | | `lockup_calendar` | 限售解禁（30天历史+90天未来） | 每交易日 17:00 |
+| **技术指标** | `indicator_values` | 30 项技术指标（MACD/KDJ/RSI/BOLL 等）D/W/M 三频 | 每日 17:00 |
 | **财务** | `fundamentals` | 季度财务（EPS/ROE/营收/净利等） | 每季度末 |
 | **外围** | `global_markets` | 美股/港股/黄金/原油/外汇K线 | 每交易日 **09:00**（美股前日收盘+港股当日开盘前更新） |
 
-| **不存库（应用层获取）** | 接口 | 内容 | 更新 |
+> 完整表清单（27 张）及详细说明见 [DATA_CATALOG.md](DATA_CATALOG.md)。
+
+| **按需获取（DataService 自动缓存+落库）** | 接口 | 内容 | 更新 |
 |------|------|------|------|
-| `research_reports` | 东财 `reportapi.eastmoney.com` | 研报列表（标题/机构/评级/三年EPS预测） | 应用层按需，逐只查询 |
-| `stock_news` | akshare `stock_news_em(code)` | 个股新闻（标题/来源/摘要/链接） | 应用层按需，逐只查询 |
-| `cls_news` | 财联社 `cls.cn` | 全市场实时电报 | 应用层按需，实时推送 |
-| `global_news` | 东财 `np-weblist` | 全球财经快讯 | 应用层按需，实时推送 |
+| `research_reports` | 东财 `reportapi.eastmoney.com` | 研报列表（标题/机构/评级/三年EPS预测） | 应用层按需，自动缓存到DB |
+| `stock_news` | akshare `stock_news_em(code)` | 个股新闻（标题/来源/摘要/链接） | 应用层按需，自动缓存到DB |
+| `eps_consensus` | akshare(同花顺) | 机构一致预期EPS | 应用层按需，自动缓存到DB |
+| `cls_telegram` | 财联社 `cls.cn` | 全市场实时电报 | 应用层按需，自动缓存到DB |
+| `shareholder_changes` | akshare | 大股东增减持 | 应用层按需，自动缓存到DB |
+| `announcements` | 巨潮 `cninfo.com.cn` | 上市公司公告全文 | 应用层按需，自动缓存到DB |
+| `dragon_tiger_seats` | 东财 datacenter | 龙虎榜营业部席位明细 | 应用层按需，自动缓存到DB |
 | `financial_reports` | 新浪 `quotes.sina.cn` | 三张财报（利润表/资产负债表/现金流量表） | 应用层按需，仅自选股 |
 | `cninfo_filings` | 巨潮 `cninfo.com.cn` | 上市公司公告全文 | 应用层按需，仅自选股 |
 
@@ -847,22 +853,20 @@ schedule:
   core: "16:00"               # 组名: 时间（HH:MM）
   signals: "17:00"
   global_markets: "09:00"     # 单表独立时间
-  daily_ohlcv: "15:30"        # 单独覆盖，同时 core 组里也会跑
-  trade_calendar: "yearly 10:00"    # 年度
+  weekly: "weekly 10:00"      # 每周（行业/概念分类）
+  fundamentals: "monthly 10:00"     # 月度（每月 1 号）
   holder_count: "monthly 10:00"     # 月度（每月 1 号）
-  fundamentals: "quarterly 10:00"   # 季度（3/6/9/12 月）
+  trade_calendar: "yearly 10:00"    # 年度
 
 schedule_groups:
   core:
     - stock_universe
-    - stock_classification
-    - concept_blocks
+    - xdxr_events
     - daily_ohlcv
     - daily_valuation
     - capital_flow
     - northbound_flow
     - board_daily
-    - xdxr_events
   signals:
     - dragon_tiger
     - hot_stocks
@@ -870,6 +874,10 @@ schedule_groups:
     - margin_trading
     - block_trades
     - lockup_calendar
+    - indicator_values
+  weekly:
+    - stock_classification
+    - concept_blocks
 ```
 
 ### 执行模式
@@ -880,9 +888,9 @@ engine.py 支持两种执行模式：
 
 | Wave | 并行策略 | 表 |
 |------|---------|---|
-| Wave 0 | 并行 | trade_calendar, stock_universe, northbound_flow |
-| Wave 1 | 串行（有依赖） | stock_classification → concept_blocks → xdxr_events → daily_ohlcv → daily_valuation → capital_flow |
-| Wave 2 | 并行 | dragon_tiger, board_daily, hot_stocks, hot_reasons, margin_trading, block_trades, lockup_calendar, holder_count, fundamentals, global_markets |
+| Wave 0 | 并行 | stock_universe, trade_calendar, global_markets, northbound_flow, board_daily, dragon_tiger, hot_stocks, hot_reasons, margin_trading, block_trades, lockup_calendar, holder_count, fundamentals |
+| Wave 1 | 串行（有依赖） | xdxr_events → daily_ohlcv |
+| Wave 2 | 并行 | daily_valuation, capital_flow, stock_classification, concept_blocks, indicator_values |
 
 **定向模式**（指定 `tables` 参数）— 直接并行跑目标表，跳过 Wave。scheduler 每次触发均使用此模式。
 
@@ -924,10 +932,11 @@ cfg.schedule_groups["my_group"] = ["daily_ohlcv", "daily_valuation"]
 | 时间 | 触发 | 内容 |
 |------|------|------|
 | 09:00 | `global_markets` | 外围行情 |
-| 16:00 | `core` | universe + 分类 + 概念 + 日线 + 估值 + 资金流 + 北向 + 板块 + 除权（并行） |
-| 17:00 | `signals` | 龙虎榜 + 两融 + 题材归因 + 热度 + 大宗 + 解禁（并行） |
+| 16:00 | `core` | 日线 + 估值 + 资金流 + 北向 + 板块 + 除权（并行） |
+| 17:00 | `signals` | 龙虎榜 + 两融 + 题材归因 + 热度 + 大宗 + 解禁 + 技术指标（并行） |
+| 每周一 10:00 | `weekly` | 行业分类 + 概念板块（低频） |
 | 每月 1 日 10:00 | `holder_count` | 股东户数 |
-| 每季度 10:00 | `fundamentals` | 季度财务 |
+| 每月 10:00 | `fundamentals` | 季度财务 |
 | 每年 12/31 10:00 | `trade_calendar` | 交易日历 |
 
 ### 命令

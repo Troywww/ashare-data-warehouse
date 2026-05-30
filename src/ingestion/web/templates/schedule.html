@@ -15,11 +15,20 @@
     <div class="card-header" id="form-title">添加调度项</div>
     <div class="card-body">
         <div class="row g-2">
-            <div class="col-md-4">
+            <div class="col-md-3">
                 <input type="text" class="form-control form-control-sm" id="edit-name" placeholder="表名或组名 (如 daily_ohlcv)">
             </div>
-            <div class="col-md-3">
-                <input type="text" class="form-control form-control-sm" id="edit-time" placeholder="时间 (如 16:00, quarterly 10:00)">
+            <div class="col-md-2">
+                <select class="form-select form-select-sm" id="edit-freq" onchange="onFreqChange()">
+                    <option value="daily">每天</option>
+                    <option value="weekly">每周</option>
+                    <option value="monthly">每月</option>
+                    <option value="quarterly">每季度</option>
+                    <option value="yearly">每年</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <input type="time" class="form-control form-control-sm" id="edit-time-val" value="16:00">
             </div>
             <div class="col-md-2">
                 <button class="btn btn-sm btn-success w-100" onclick="saveSchedule()">保存</button>
@@ -27,12 +36,18 @@
             <div class="col-md-2">
                 <button class="btn btn-sm btn-outline-secondary w-100" onclick="hideForm()">取消</button>
             </div>
+            <div class="col-md-12" id="edit-conflict-warning" style="display:none"></div>
             <div class="col-md-12">
-                <span class="text-secondary small">格式: <code>HH:MM</code>、<code>monthly HH:MM</code>、<code>quarterly HH:MM</code>、<code>yearly HH:MM</code></span>
+                <span class="text-secondary small">
+                    格式：<code>HH:MM</code>（每天）、<code>weekly HH:MM</code>、<code>monthly HH:MM</code>、<code>quarterly HH:MM</code>、<code>yearly HH:MM</code>
+                </span>
             </div>
         </div>
     </div>
 </div>
+
+<!-- Schedule overview cards -->
+<div id="schedule-overview" class="row g-2 mb-3"></div>
 
 <!-- Schedule list -->
 <div id="schedule-panel">
@@ -43,7 +58,7 @@
 
 <!-- Timeline -->
 <div class="card mt-3" id="timeline-card" style="display:none">
-    <div class="card-header">每日时间线</div>
+    <div class="card-header">每日执行时间线</div>
     <div class="card-body" id="timeline-body"></div>
 </div>
 
@@ -58,77 +73,249 @@ function loadSchedule() {
         .then(r => r.json())
         .then(data => {
             _scheduleData = data;
+            renderOverview(data);
             renderSchedule(data);
         });
 }
+
+// ---- Overview cards: 当前调度策略概览 ----
+
+const FREQ_COLORS = {daily:'primary', weekly:'info', monthly:'success', quarterly:'warning', yearly:'secondary'};
+const FREQ_ICONS = {daily:'📅', weekly:'📆', monthly:'🗓️', quarterly:'📊', yearly:'📌'};
+
+function renderOverview(data) {
+    const el = document.getElementById('schedule-overview');
+    if (!data.schedule || Object.keys(data.schedule).length === 0) {
+        el.innerHTML = `<div class="col-12"><div class="alert alert-warning mb-0">暂无调度配置</div></div>`;
+        return;
+    }
+
+    // Group by frequency
+    const byFreq = {};
+    for (const [name, info] of Object.entries(data.schedule)) {
+        const f = info.frequency || 'daily';
+        if (!byFreq[f]) byFreq[f] = [];
+        byFreq[f].push({name, ...info});
+    }
+
+    let html = '';
+    const freqOrder = ['daily', 'weekly', 'monthly', 'quarterly', 'yearly'];
+    freqOrder.forEach(freq => {
+        const entries = byFreq[freq];
+        if (!entries || entries.length === 0) return;
+        const color = FREQ_COLORS[freq] || 'secondary';
+        const icon = FREQ_ICONS[freq] || '📅';
+        const totalTables = entries.reduce((sum, e) => sum + (e.table_count || 0), 0);
+
+        html += `<div class="col-md-6 col-lg-4 mb-2">
+            <div class="card stat-card border-${color} h-100">
+                <div class="card-body py-2">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <span class="badge bg-${color} me-2">${icon} ${freq==='daily'?'每天':freq==='weekly'?'每周':freq==='monthly'?'每月':freq==='quarterly'?'每季度':'每年'}</span>
+                            <span class="small text-secondary">${entries.length} 个调度项 · ${totalTables} 张表</span>
+                        </div>
+                    </div>
+                    <div class="mt-2 small">`;
+        entries.forEach(e => {
+            html += `<div class="d-flex justify-content-between">
+                <span><code>${e.name}</code> <span class="text-secondary">${e.type==='group'?'('+e.table_count+'表)':''}</span></span>
+                <span class="text-${color} fw-bold">${e.time}</span>
+            </div>`;
+        });
+        html += `</div>
+                    <div class="small text-secondary mt-1">${entries[0].strategy}</div>
+                </div>
+            </div>
+        </div>`;
+    });
+
+    el.innerHTML = html;
+}
+
+// ---- Main schedule table ----
 
 function renderSchedule(data) {
     const panel = document.getElementById('schedule-panel');
     let html = '';
 
-    // Schedule times
-    html += `<div class="card mb-3"><div class="card-header">时间配置</div>
+    // === 时间配置表 ===
+    html += `<div class="card mb-3">
+        <div class="card-header d-flex justify-content-between">
+            <span>⏰ 调度时间配置</span>
+            <span class="small text-secondary">配置保存在 config.yaml → schedule 节</span>
+        </div>
         <div class="card-body p-0">
-            <table class="table table-sm mb-0">
-                <thead><tr><th>名称</th><th>时间</th><th>类型</th><th style="width:80px">操作</th></tr></thead><tbody>`;
+            <div class="table-responsive">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-dark">
+                        <tr>
+                            <th style="width:140px">名称</th>
+                            <th style="width:90px">频率</th>
+                            <th style="width:90px">执行时间</th>
+                            <th style="width:70px">类型</th>
+                            <th>覆盖表</th>
+                            <th>更新策略</th>
+                            <th style="width:80px">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
 
-    let entries = [];
-    for (const [name, time] of Object.entries(data.schedule || {})) {
-        let type = '单表';
-        for (const [g, members] of Object.entries(data.groups || {})) {
-            if (g === name) { type = '组'; break; }
+    if (!data.schedule || Object.keys(data.schedule).length === 0) {
+        html += `<tr><td colspan="7" class="text-center text-secondary py-3">暂无调度配置，点击「+ 添加」创建</td></tr>`;
+    } else {
+        // Sort: daily first (by time), then weekly/monthly/quarterly/yearly
+        const entries = Object.entries(data.schedule);
+        const dailyEntries = entries.filter(([,v]) => v.is_daily).sort((a,b) => a[1].time.localeCompare(b[1].time));
+        const otherEntries = entries.filter(([,v]) => !v.is_daily).sort((a,b) => a[0].localeCompare(b[0]));
+
+        [...dailyEntries, ...otherEntries].forEach(([name, info]) => {
+            const color = FREQ_COLORS[info.frequency] || 'secondary';
+            const freqIcon = FREQ_ICONS[info.frequency] || '';
+            const typeBadge = info.type === 'group'
+                ? `<span class="badge bg-info">组</span>`
+                : `<span class="badge bg-light text-dark">单表</span>`;
+            const tables = (info.tables || []).map(t => `<code class="small">${t}</code>`).join(' ');
+
+            let freqDisplay = info.frequency_label;
+            // Highlight non-daily schedules
+            if (!info.is_daily) {
+                freqDisplay = `<span class="badge bg-${color}">${freqIcon} ${info.frequency_label}</span>`;
+            } else {
+                freqDisplay = `<span class="badge bg-${color}">${freqIcon} ${info.frequency_label}</span>`;
+            }
+
+            html += `<tr>
+                <td><code class="fw-bold">${name}</code></td>
+                <td>${freqDisplay}</td>
+                <td><span class="fw-bold text-${color}">${info.time}</span></td>
+                <td>${typeBadge}</td>
+                <td class="small">${tables || '-'}</td>
+                <td class="small text-secondary">${info.strategy}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary py-0 me-1" onclick="editEntry('${name}', '${info.raw}')" title="编辑">✎</button>
+                    <button class="btn btn-sm btn-outline-danger py-0" onclick="deleteEntry('${name}')" title="删除">×</button>
+                </td>
+            </tr>`;
+        });
+    }
+
+    html += `</tbody></table></div></div></div>`;
+
+    // === 调度组详情 ===
+    if (data.groups && Object.keys(data.groups).length > 0) {
+        html += `<div class="card mb-3">
+            <div class="card-header d-flex justify-content-between">
+                <span>📦 调度组详情</span>
+                <span class="small text-secondary">组内所有表共享同一调度时间</span>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-sm table-hover mb-0">
+                    <thead><tr><th style="width:120px">组名</th><th>包含表</th><th style="width:100px">调度时间</th></tr></thead>
+                    <tbody>`;
+
+        for (const [groupName, members] of Object.entries(data.groups)) {
+            const schedInfo = data.schedule?.[groupName];
+            const timeDisplay = schedInfo
+                ? `<span class="badge bg-${FREQ_COLORS[schedInfo.frequency]||'secondary'}">${schedInfo.raw}</span>`
+                : `<span class="text-warning">未配置</span>`;
+            html += `<tr>
+                <td><code class="fw-bold">${groupName}</code></td>
+                <td class="small">${members.map(m => `<code>${m}</code>`).join(' ')}</td>
+                <td>${timeDisplay}</td>
+            </tr>`;
         }
-        entries.push({name, time, type});
+
+        html += `</tbody></table></div></div>`;
     }
-    entries.sort((a, b) => a.time.localeCompare(b.time));
 
-    entries.forEach(({name, time, type}) => {
-        html += `<tr>
-            <td><code>${name}</code></td>
-            <td><span class="badge bg-primary">${time}</span></td>
-            <td>${type}</td>
-            <td>
-                <button class="btn btn-sm btn-outline-primary py-0 me-1" onclick="editEntry('${name}', '${time}')">编辑</button>
-                <button class="btn btn-sm btn-outline-danger py-0" onclick="deleteEntry('${name}')">×</button>
-            </td>
-        </tr>`;
-    });
+    // === 每日时间线 ===
+    renderTimeline(data);
 
-    html += `</tbody></table></div></div>`;
+    // === 表→调度映射（冲突检测参考） ===
+    if (data.table_schedules && Object.keys(data.table_schedules).length > 0) {
+        // Find tables covered by multiple schedules (potential conflicts)
+        const conflicts = Object.entries(data.table_schedules)
+            .filter(([, schedules]) => schedules.length > 1);
 
-    // Groups
-    html += `<div class="card mb-3"><div class="card-header">调度组</div>
-        <div class="card-body p-0">
-            <table class="table table-sm mb-0">
-                <thead><tr><th>组名</th><th>包含表</th></tr></thead><tbody>`;
-    for (const [groupName, members] of Object.entries(data.groups || {})) {
-        html += `<tr><td><code>${groupName}</code></td><td class="small">`;
-        html += members.map(m => `<code>${m}</code>`).join(', ');
-        html += `</td></tr>`;
+        html += `<div class="card mb-3">
+            <div class="card-header d-flex justify-content-between">
+                <span>🔗 表→调度映射</span>
+                <span class="small text-secondary">添加新调度前检查避免重复</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height:300px">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead><tr><th>表名</th><th>归属调度</th><th>状态</th></tr></thead>
+                        <tbody>`;
+
+        const sortedTables = Object.keys(data.table_schedules).sort();
+        sortedTables.forEach(table => {
+            const schedules = data.table_schedules[table];
+            const hasConflict = schedules.length > 1;
+            const schedDisplay = schedules.map(s => `<code>${s}</code>`).join(', ');
+            const statusHtml = hasConflict
+                ? `<span class="badge bg-danger" title="多个调度覆盖此表，可能冲突">⚠ 冲突</span>`
+                : `<span class="badge bg-success">✓</span>`;
+
+            html += `<tr class="${hasConflict ? 'table-warning' : ''}">
+                <td><code>${table}</code></td>
+                <td class="small">${schedDisplay}</td>
+                <td>${statusHtml}</td>
+            </tr>`;
+        });
+
+        html += `</tbody></table></div></div></div>`;
     }
-    html += `</tbody></table></div></div>`;
+
+    // === 按需获取 ===
+    if (data.ungrouped && data.ungrouped.length > 0) {
+        const scheduledNames = new Set(Object.keys(data.schedule || {}));
+        const trulyUngrouped = data.ungrouped.filter(n => !scheduledNames.has(n));
+        if (trulyUngrouped.length > 0) {
+            html += `<div class="card mb-3">
+                <div class="card-header">
+                    <span>📡 按需获取（无自动调度）</span>
+                    <span class="badge bg-secondary ms-2">${trulyUngrouped.length} 张表</span>
+                </div>
+                <div class="card-body py-2">
+                    <p class="small text-secondary mb-2">以下表不在任何调度组中，通过 MCP 工具触发 DataService 按需拉取并缓存。</p>`;
+            trulyUngrouped.forEach(name => {
+                html += `<code class="me-2 mb-1 d-inline-block">${name}</code>`;
+            });
+            html += `</div></div>`;
+        }
+    }
 
     panel.innerHTML = html;
-    renderTimeline(data);
 }
+
+// ---- Timeline ----
 
 function renderTimeline(data) {
     const card = document.getElementById('timeline-card');
     const body = document.getElementById('timeline-body');
-    card.style.display = 'block';
 
-    const entries = [];
-    for (const [name, timeStr] of Object.entries(data.schedule || {})) {
-        const match = timeStr.match(/(\d{2}):(\d{2})/);
-        if (match) {
-            entries.push({name, timeStr, hour: parseInt(match[1]), minute: parseInt(match[2])});
+    // Only show daily schedules in timeline
+    const dailyEntries = [];
+    for (const [name, info] of Object.entries(data.schedule || {})) {
+        if (info.is_daily && info.time && info.time.includes(':')) {
+            const [h, m] = info.time.split(':').map(Number);
+            dailyEntries.push({name, timeStr: info.time, hour: h, minute: m});
         }
     }
-    entries.sort((a, b) => a.hour * 60 + a.minute - (b.hour * 60 + b.minute));
+
+    if (dailyEntries.length === 0) {
+        card.style.display = 'none';
+        return;
+    }
+
+    card.style.display = 'block';
+    dailyEntries.sort((a, b) => a.hour * 60 + a.minute - (b.hour * 60 + b.minute));
 
     let html = `<div class="table-responsive"><table class="table table-sm mb-0">`;
     let currentHour = -1;
-    entries.forEach(e => {
+    dailyEntries.forEach(e => {
         if (e.hour !== currentHour) {
             if (currentHour >= 0) html += `</tbody>`;
             const label = `${String(e.hour).padStart(2, '0')}:00`;
@@ -138,38 +325,147 @@ function renderTimeline(data) {
         html += `<tr><td style="padding-left:${Math.min(e.minute, 55)}px"><span class="badge bg-info">${e.timeStr}</span></td><td><code>${e.name}</code></td></tr>`;
     });
     html += `</tbody></table></div>`;
-    html += `<p class="text-secondary small mt-2 mb-0">配置保存在 <code>config.yaml</code> → <code>schedule</code> 节</p>`;
+
+    // Note non-daily schedules
+    const nonDaily = Object.entries(data.schedule || {}).filter(([,v]) => !v.is_daily);
+    if (nonDaily.length > 0) {
+        html += `<p class="text-secondary small mt-2 mb-0">
+            非每日调度项（不显示在时间线上）：
+            ${nonDaily.map(([n, v]) => `<code>${n}</code> <span class="badge bg-${FREQ_COLORS[v.frequency]||'secondary'}">${v.raw}</span>`).join(' &nbsp;')}
+        </p>`;
+    }
+
     body.innerHTML = html;
 }
 
+// ---- Add / Edit form logic ----
+
+let _editingName = null;
+
 function showAddForm() {
+    _editingName = null;
     document.getElementById('edit-name').value = '';
-    document.getElementById('edit-time').value = '';
-    document.getElementById('form-title').textContent = '添 加 调 度';
+    document.getElementById('edit-freq').value = 'daily';
+    document.getElementById('edit-time-val').value = '16:00';
+    document.getElementById('form-title').textContent = '添加调度项';
     document.getElementById('edit-form').style.display = 'block';
+    document.getElementById('edit-conflict-warning').style.display = 'none';
     document.getElementById('edit-name').focus();
+    onFreqChange();
 }
 
-function editEntry(name, time) {
+function editEntry(name, rawTime) {
+    _editingName = name;
     document.getElementById('edit-name').value = name;
-    document.getElementById('edit-time').value = time;
-    document.getElementById('form-title').textContent = '编 辑 调 度';
+
+    // Parse raw time
+    const parts = rawTime.split(' ');
+    if (parts.length === 2 && ['weekly','monthly','quarterly','yearly'].includes(parts[0].toLowerCase())) {
+        document.getElementById('edit-freq').value = parts[0].toLowerCase();
+        document.getElementById('edit-time-val').value = parts[1];
+    } else {
+        document.getElementById('edit-freq').value = 'daily';
+        document.getElementById('edit-time-val').value = rawTime;
+    }
+    document.getElementById('form-title').textContent = `编辑调度: ${name}`;
     document.getElementById('edit-form').style.display = 'block';
+    document.getElementById('edit-conflict-warning').style.display = 'none';
+    onFreqChange();
+    checkConflict();
 }
 
 function hideForm() {
     document.getElementById('edit-form').style.display = 'none';
 }
 
+function onFreqChange() {
+    // Show/hide time picker based on frequency
+    const freq = document.getElementById('edit-freq').value;
+    const timeInput = document.getElementById('edit-time-val');
+    // Always show time for all frequencies
+    timeInput.style.display = 'block';
+    checkConflict();
+}
+
+function checkConflict() {
+    const name = document.getElementById('edit-name').value.trim();
+    const warnEl = document.getElementById('edit-conflict-warning');
+    if (!_scheduleData || !name) {
+        warnEl.style.display = 'none';
+        return;
+    }
+
+    // Check if this table/group name is already scheduled (and not editing itself)
+    if (_scheduleData.schedule && _scheduleData.schedule[name] && _editingName !== name) {
+        const existing = _scheduleData.schedule[name];
+        warnEl.innerHTML = `<div class="alert alert-danger py-1 mb-0 small">
+            ⚠ <code>${name}</code> 已存在调度配置（${existing.raw}），保存将覆盖原配置。
+        </div>`;
+        warnEl.style.display = 'block';
+        return;
+    }
+
+    // Check if any table that belongs to this name is already in another group
+    if (_scheduleData.table_schedules) {
+        const overlapping = _scheduleData.table_schedules[name];
+        if (overlapping && overlapping.length > 0 && !(overlapping.length === 1 && overlapping[0] === _editingName)) {
+            // This name is a table that's already in a group
+            warnEl.innerHTML = `<div class="alert alert-warning py-1 mb-0 small">
+                ⚠ 表 <code>${name}</code> 已在调度 <code>${overlapping.join(', ')}</code> 中，单独添加可能导致重复更新。
+            </div>`;
+            warnEl.style.display = 'block';
+            return;
+        }
+    }
+
+    warnEl.style.display = 'none';
+}
+
+// Debounce for conflict check
+let _conflictTimer = null;
+document.addEventListener('DOMContentLoaded', () => {
+    const nameInput = document.getElementById('edit-name');
+    if (nameInput) {
+        nameInput.addEventListener('input', () => {
+            clearTimeout(_conflictTimer);
+            _conflictTimer = setTimeout(checkConflict, 300);
+        });
+    }
+});
+
 function saveSchedule() {
     const name = document.getElementById('edit-name').value.trim();
-    const time = document.getElementById('edit-time').value.trim();
-    if (!name || !time) return;
+    const freq = document.getElementById('edit-freq').value;
+    const timeVal = document.getElementById('edit-time-val').value;
+    if (!name || !timeVal) return;
 
+    let timeStr;
+    if (freq === 'daily') {
+        timeStr = timeVal;
+    } else {
+        timeStr = `${freq} ${timeVal}`;
+    }
+
+    // If editing and name changed, delete old entry first
+    if (_editingName && _editingName !== name) {
+        fetch('/api/schedule/update', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: _editingName, time: ''}),
+        }).then(() => {
+            doSave(name, timeStr);
+        });
+        return;
+    }
+
+    doSave(name, timeStr);
+}
+
+function doSave(name, timeStr) {
     fetch('/api/schedule/update', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name, time}),
+        body: JSON.stringify({name, time: timeStr}),
     })
     .then(r => r.json())
     .then(data => {
@@ -184,8 +480,14 @@ function saveSchedule() {
 }
 
 function deleteEntry(name) {
-    if (!confirm(`确定删除 "${name}" 的调度配置？`)) return;
-    // Set time to empty string to remove it
+    // Extra warning for group entries
+    const info = _scheduleData?.schedule?.[name];
+    const extraMsg = info && info.type === 'group'
+        ? `\n\n⚠ 这是调度组，删除后组内 ${info.table_count} 张表将不再自动更新！`
+        : '';
+
+    if (!confirm(`确定删除调度 "${name}"？${extraMsg}`)) return;
+
     fetch('/api/schedule/update', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},

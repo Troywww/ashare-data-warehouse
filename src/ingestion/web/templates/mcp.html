@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}MCP 工具 — A股数据仓库{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="m-0">🔧 MCP 工具参考</h4>
+    <button class="btn btn-sm btn-outline-secondary" onclick="loadTools()">刷新</button>
+</div>
+
+<div class="alert alert-info py-2 mb-3">
+    <strong>MCP 连接地址:</strong> <code>http://&lt;host&gt;:8000/sse</code>
+    <span class="text-secondary ms-3">Agent 可通过 MCP 协议远程调用以下工具查询数据库</span>
+</div>
+
+<div id="tools-panel">
+    <div class="text-center py-5">
+        <div class="spinner-border text-primary"></div>
+        <p class="mt-2 text-secondary">加载中...</p>
+    </div>
+</div>
+
+<script>
+// MCP 工具分类
+const TOOL_CATEGORIES = {
+    '行情数据': [/query_kline/, /query_valuation/, /query_global_markets/, /get_realtime/, /get_intraday/, /get_limit_up/],
+    '资金流向': [/query_capital_flow/, /query_northbound/, /query_margin/],
+    '市场信号': [/dragon_tiger/, /query_board/, /query_hot/, /query_block/, /query_lockup/],
+    '基本面': [/query_fundamentals/, /query_holder/, /get_eps/, /get_research/],
+    '新闻资讯': [/get_latest_news/, /get_stock_news/, /get_announcements/],
+    '股票搜索': [/search_stocks/, /query_industry/, /query_concept/],
+    '技术分析': [/find_signal/, /compute_indicator/],
+    '股东信息': [/shareholder/],
+    '系统': [/clear_cache/, /cache_stats/, /get_market_overview/, /run_sql/],
+};
+
+function getCategory(name) {
+    for (const [cat, patterns] of Object.entries(TOOL_CATEGORIES)) {
+        for (const p of patterns) {
+            if (p.test(name)) return cat;
+        }
+    }
+    return '其他';
+}
+
+function loadTools() {
+    const panel = document.getElementById('tools-panel');
+    panel.innerHTML = `<div class="text-center py-3"><div class="spinner-border spinner-border-sm"></div></div>`;
+
+    fetch('/api/mcp-tools')
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                panel.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                return;
+            }
+
+            // Group by category
+            const grouped = {};
+            data.tools.forEach(t => {
+                const cat = getCategory(t.name);
+                if (!grouped[cat]) grouped[cat] = [];
+                grouped[cat].push(t);
+            });
+
+            let html = '';
+            const catIcons = {
+                '行情数据': '📈', '资金流向': '💰', '市场信号': '🔔',
+                '基本面': '📄', '新闻资讯': '📰', '股票搜索': '🔍',
+                '技术分析': '📐', '股东信息': '👥', '系统': '⚙️', '其他': '📦'
+            };
+
+            for (const [cat, tools] of Object.entries(grouped)) {
+                const icon = catIcons[cat] || '📦';
+                html += `<div class="card mb-3">
+                    <div class="card-header py-2">
+                        <strong>${icon} ${cat}</strong>
+                        <span class="badge bg-secondary ms-2">${tools.length} 工具</span>
+                    </div>
+                    <div class="card-body p-0">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead>
+                                <tr>
+                                    <th style="width:200px">工具名</th>
+                                    <th>描述</th>
+                                    <th style="width:280px">参数</th>
+                                </tr>
+                            </thead>
+                            <tbody>`;
+
+                tools.forEach(t => {
+                    const params = (t.parameters || []).map(p => {
+                        let label = `<code>${p.name}</code>`;
+                        if (p.type) label += ` <span class="text-muted">${p.type}</span>`;
+                        if (p.default !== null && p.default !== 'None') label += ` = <span class="text-info">${p.default}</span>`;
+                        return label;
+                    }).join(', ');
+
+                    html += `<tr>
+                        <td><code class="text-info">${t.name}</code></td>
+                        <td class="small">${t.description || '-'}</td>
+                        <td class="small text-secondary">${params || '-'}</td>
+                    </tr>`;
+                });
+
+                html += `</tbody></table></div></div>`;
+            }
+
+            html += `<div class="text-secondary small">共 <strong>${data.total}</strong> 个 MCP 工具</div>`;
+            panel.innerHTML = html;
+        })
+        .catch(err => {
+            panel.innerHTML = `<div class="alert alert-danger">加载失败: ${err.message}</div>`;
+        });
+}
+
+document.addEventListener('DOMContentLoaded', loadTools);
+</script>
+{% endblock %}

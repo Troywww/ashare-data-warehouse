@@ -51,7 +51,7 @@ def _parse_time(time_str: str) -> tuple[str, str] | None:
     parts = time_str.split()
     if len(parts) == 1:
         return "daily", parts[0]
-    if len(parts) == 2 and parts[0] in ("monthly", "quarterly", "yearly"):
+    if len(parts) == 2 and parts[0] in ("weekly", "monthly", "quarterly", "yearly"):
         return parts[0], parts[1]
     logger.warning("Invalid schedule: %s", time_str)
     return None
@@ -70,6 +70,9 @@ def start_scheduler(config: Config):
 
         if sched_type == "daily":
             sched_lib.every().day.at(hhmm).do(_run_fetcher_group, engine, name)
+            registered += 1
+        elif sched_type == "weekly":
+            sched_lib.every().day.at(hhmm).do(_weekly_check, engine, name)
             registered += 1
         elif sched_type == "monthly":
             sched_lib.every().day.at(hhmm).do(_monthly_check, engine, name)
@@ -95,6 +98,11 @@ def _monthly_check(engine: DailyUpdateEngine, name: str):
         _run_fetcher_group(engine, name)
 
 
+def _weekly_check(engine: DailyUpdateEngine, name: str):
+    if date.today().weekday() == 0:  # Monday
+        _run_fetcher_group(engine, name)
+
+
 _quarterly_done: set[str] = set()
 
 
@@ -115,6 +123,21 @@ def _yearly_check(engine: DailyUpdateEngine, name: str):
 
 def run_once(config: Config):
     DailyUpdateEngine(config).run_daily_update()
+
+
+def start_scheduler_thread(config: Config) -> threading.Thread:
+    """Start the scheduler as a daemon thread.
+
+    Use this when running the scheduler in the same process as the MCP server,
+    so both share a single Python process and DuckDB connections can coexist.
+    """
+    def _run():
+        start_scheduler(config)
+
+    t = threading.Thread(target=_run, daemon=True, name="ingestion-scheduler")
+    t.start()
+    logger.info("Scheduler thread started (daemon)")
+    return t
 
 
 if __name__ == "__main__":

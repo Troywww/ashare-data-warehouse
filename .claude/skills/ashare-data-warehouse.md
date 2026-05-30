@@ -164,29 +164,37 @@ ingestion daily-update
 ingestion daily-update -t daily_ohlcv,global_markets
 ```
 
-### 19 张表与常用查询
+### 27 张表与常用查询
 
 | 层级 | 表名 | 用途 |
 |------|------|------|
 | **基础** | `trade_calendar` | 交易日历 |
-| | `stock_universe` | 全品种索引 |
+| | `stock_universe` | 全品种索引（含上市日期） |
 | | `stock_classification` | 行业 + 地域分类 |
-| | `concept_blocks` | 概念板块映射 |
-| **行情** | `daily_ohlcv` | **核心** — 日 K 线（前复权） |
-| | `daily_valuation` | PE/PB/PS/PCF/市值 |
+| | `concept_blocks` | 概念板块 N:N 映射 |
+| **行情** | `daily_ohlcv` | **核心** — 日 K 线（前复权）含涨跌幅/换手率 |
+| | `daily_valuation` | PE(TTM)/PB/PS/PCF/总市值/流通市值 |
 | | `xdxr_events` | 除权除息事件 |
-| **资金** | `capital_flow` | 主力净流入 |
-| | `northbound_flow` | 北向资金 |
-| | `margin_trading` | 融资融券余额 |
-| **信号** | `dragon_tiger` | 龙虎榜（含上榜后表现） |
-| | `board_daily` | 板块排名 + 领涨股 |
-| | `hot_stocks` | 雪球热度排名 |
-| | `hot_reasons` | 题材归因标签 |
-| | `block_trades` | 大宗交易 |
-| | `lockup_calendar` | 限售解禁日历 |
-| **财务** | `fundamentals` | 季度财报 |
-| | `holder_count` | 股东户数 |
-| **外围** | `global_markets` | 外围指数日 K 线 |
+| | `global_markets` | 外围指数日 K 线（美股/港股/黄金/原油） |
+| **资金** | `capital_flow` | 主力/超大单/大单/中单/小单净流入 |
+| | `northbound_flow` | 北向资金（沪股通/深股通） |
+| | `margin_trading` | 融资融券余额明细 |
+| **信号** | `dragon_tiger` | 龙虎榜（含上榜后 1/2/5/10 日表现） |
+| | `dragon_tiger_seats` | 龙虎榜营业部席位明细 |
+| | `board_daily` | 板块涨跌排名 + 领涨股 |
+| | `hot_stocks` | 雪球关注热度排名 |
+| | `hot_reasons` | 同花顺题材归因标签 |
+| | `block_trades` | 大宗交易（含折溢价率/营业部） |
+| | `lockup_calendar` | 限售解禁日历（未来 90 天） |
+| **技术指标** | `indicator_values` | 30 项技术指标（MACD/KDJ/RSI/BOLL 等）D/W/M 三频 |
+| **财务** | `fundamentals` | 季度财报（EPS/ROE/营收/利润/毛利率/现金流） |
+| | `holder_count` | 股东户数（环比变化） |
+| | `eps_consensus` | 机构一致预期 EPS（当年+未来 2 年） |
+| | `research_reports` | 个股研报（标题/机构/评级/EPS 预测） |
+| **股东** | `shareholder_changes` | 大股东增减持 |
+| | `announcements` | 巨潮公告 |
+| **资讯** | `cls_telegram` | 财联社实时快讯 |
+| | `stock_news` | 个股新闻 |
 
 ```sql
 -- 个股行情 + 估值

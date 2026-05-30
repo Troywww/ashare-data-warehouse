@@ -15,17 +15,17 @@ services:
     restart: unless-stopped
     network_mode: host
 
-    # Mount config & data as volumes for persistence
+    # Mount data as Docker volume for persistence (avoids Windows bind-mount issues)
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      # 将宿主机 data/ingestion 目录挂载到容器，持久化 DuckDB 数据
-      # 默认路径相对于 compose 文件所在目录的 ../data/ingestion
-      - ../data/ingestion:/app/data/ingestion
+      - ingestion_data:/app/data/ingestion
 
     # Environment variables override config.yaml values
     environment:
       - INGESTION_DB_PATH=/app/data/ingestion/stock_research.duckdb
       - INGESTION_DATA_DIR=/app/data/ingestion
+      - INGESTION_CONFIG=/app/config.yaml
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8001
       - TZ=Asia/Shanghai
 
     # Resource limits
@@ -36,9 +36,9 @@ services:
         reservations:
           memory: 1G
 
-    # Healthcheck
+    # Healthcheck — TCP check on MCP port (avoids DuckDB cross-process lock conflict)
     healthcheck:
-      test: ["CMD", "python", "-c", "from src.ingestion.db import IngestionDB; db = IngestionDB(); sz = db.get_db_size(); print(f'DB size: {sz} bytes')"]
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('127.0.0.1',8001)); s.close(); print('OK')"]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -54,8 +54,7 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./config.yaml:/app/config.yaml
-      - ../data/ingestion:/app/data/ingestion
+      - ingestion_data:/app/data/ingestion
     environment:
       - INGESTION_DB_PATH=/app/data/ingestion/stock_research.duckdb
       - INGESTION_DATA_DIR=/app/data/ingestion
@@ -64,25 +63,5 @@ services:
       ingestion:
         condition: service_healthy
 
-  mcp:
-    build:
-      context: .
-      dockerfile: Dockerfile.mcp
-    image: ashare-data-warehouse-mcp:latest
-    container_name: ashare-data-warehouse-mcp
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./config.yaml:/app/config.yaml
-      - ../data/ingestion:/app/data/ingestion
-    environment:
-      - INGESTION_DB_PATH=/app/data/ingestion/stock_research.duckdb
-      - INGESTION_DATA_DIR=/app/data/ingestion
-      - INGESTION_CONFIG=/app/config.yaml
-      - MCP_HOST=0.0.0.0
-      - MCP_PORT=8000
-      - TZ=Asia/Shanghai
-    depends_on:
-      ingestion:
-        condition: service_healthy
+volumes:
+  ingestion_data:
