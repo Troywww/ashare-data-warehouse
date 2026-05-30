@@ -999,9 +999,9 @@ ingestion schedule
 
 | 表 | 限制 | 原因 |
 |---|------|------|
-| `xdxr_events` | `cash_dividend`/`transfer_ratio`/`category` 始终 NULL | 东财 API 已不再返回这些字段 |
+| `xdxr_events` | — | 字段已正常获取（东财仍返回 cash_dividend/transfer_ratio/category） |
 | `board_daily` | `total_mv`/`turnover_rate`/`up_count`/`down_count`/`leader_pct` 全 None | easy_tdx 板块 API 不提供这些字段 |
 | `lockup_calendar` | `unlock_vol`/`status` NULL | 东财 API 已不再提供这些字段 |
-| `capital_flow` | `net_super_5d` 等字段为 5 日累计而非当值 | easy_tdx API 限制 |
+| `capital_flow` | `net_super`/`net_large`/`net_medium`/`net_small` 为当日值，非 5 日累计 | easy_tdx API 仅返回当日分单净额 |
 | `holder_count` | `change_qoq`/`avg_shares` 始终 NULL | 东财 API 已不再提供这些字段 |
 
