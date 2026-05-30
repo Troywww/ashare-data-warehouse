@@ -118,7 +118,7 @@
 
 | 数据源 | 协议 | 覆盖表 | 特性 | 替代方案 |
 |--------|------|--------|------|---------|
-| **opentdx**（通达信） | TCP Socket | 5 张核心表（stock_universe, classification, concept_blocks, daily_ohlcv, capital_flow, global_markets） | 盘中实时，数据最全，含北交所；TCP 有限流，回补并发 ≤ 3 | baostock（缺北交所）、akshare |
+| **opentdx**（通达信） | TCP Socket | 6 张核心表（stock_universe, classification, concept_blocks, daily_ohlcv, capital_flow, global_markets）+ board_daily + indicator_values 计算依赖 | 盘中实时，数据最全，含北交所；TCP 有限流，回补并发 ≤ 3 | baostock（缺北交所）、akshare |
 | **akshare** | HTTP | 8 张表（dragon_tiger, margin_trading, fundamentals, hot_stocks 等） | 社区活跃，接口丰富；依赖上游数据源稳定性 | 无直接替代 |
 | **东方财富 API** | HTTP | 5 张表（northbound_flow, block_trades, lockup_calendar, holder_count, xdxr_events） | 覆盖独有数据（大宗、解禁、股东户数）；部分字段官方已停更 | 同花顺 |
 | **腾讯 API** | HTTP | daily_valuation（增量） | 简单可靠，盘中实时 PE/PB | baostock（历史回补） |
