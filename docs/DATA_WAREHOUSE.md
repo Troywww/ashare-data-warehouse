@@ -6,7 +6,7 @@
 |------|------|
 | 存储引擎 | DuckDB |
 | 表数量 | 27 张 |
-| 核心数据源 | OpenTDX(opentdx) / baostock / 腾讯API / 东财datacenter / akshare / 同花顺 |
+| 核心数据源 | easy_tdx（通达信协议封装）/ baostock / 腾讯API / 东财datacenter / akshare / 同花顺 |
 | 更新方式 | 每日增量 daily-update，一次性 backfill |
 
 ---
@@ -67,7 +67,7 @@
 
 ### 2. `stock_universe` — 主表（**所有品种索引**）
 
-> **主源：opentdx `stock_list(SH)` + `stock_list(SZ)` + `stock_list(BJ)`**（TCP，盘中实时）
+> **主源：easy_tdx `stock_list(SH)` + `stock_list(SZ)` + `stock_list(BJ)`**（TCP，盘中实时）
 > **更新：** 每交易日 16:00，全量 INSERT OR REPLACE
 
 | 字段 | 类型 | 说明 |
@@ -82,7 +82,7 @@
 |------|------|---------|
 | 沪市 A 股 | ~2,515 | 60xxxx + 68xxxx |
 | 深市 A 股 | ~3,158 | 00xxxx + 30xxxx |
-| 北交所 | ~317 | 92xxxx（opentdx `MARKET.BJ`） |
+| 北交所 | ~317 | 92xxxx（easy_tdx `MARKET.BJ`） |
 | **总计** | **~5,990** | |
 
 **过滤规则：** 代码前缀白名单 `60/68`（沪）、`00/30`（深）、`92`（北交所），排除债券/转债前缀 `81-89`。
@@ -92,7 +92,7 @@
 **更新时序：**
 
 ```
-每日 ── OpenTDX stock_list（sh/sz/bj）  ~0.1s
+每日 ── easy_tdx stock_list（sh/sz/bj）  ~0.1s
 ```
 
 **其他说明：**
@@ -101,7 +101,7 @@
 
 ### 3. `daily_ohlcv` — 日K线（主行情表）
 
-> **主源：opentdx `stock_kline(adjust=QFQ)`**（TCP，前复权，8 线程并发）
+> **主源：easy_tdx `stock_kline(adjust=QFQ)`**（TCP，前复权，8 线程并发）
 > **备源：baostock `query_history_k_data_plus(adjustflag=2)`**（TCP，仅 sh/sz）
 > **增量：** 每交易日 16:00，拉取近 5 天
 > **回补：** count=800，过滤 2010-01-01 前数据
@@ -125,7 +125,7 @@
 
 ### 4. `stock_classification` — 行业/地域索引
 
-> **主源：opentdx `stock_board_list(HY/DQ)` + `stock_board_members`**（TCP，行业 HY 127个 + 地域 DQ 32个）
+> **主源：easy_tdx `stock_board_list(HY/DQ)` + `stock_board_members`**（TCP，行业 HY 127个 + 地域 DQ 32个）
 > **更新：** 每交易日 16:00，全量覆盖
 
 | 字段 | 类型 | 说明 |
@@ -138,7 +138,7 @@
 
 ### 5. `concept_blocks` — 概念板块索引
 
-> **主源：opentdx `stock_board_list(GN)` + `stock_board_members`**（TCP，269个概念板块）
+> **主源：easy_tdx `stock_board_list(GN)` + `stock_board_members`**（TCP，269个概念板块）
 > **更新：** 每交易日 16:00，全量覆盖
 
 | 字段 | 类型 | 说明 |
@@ -249,7 +249,7 @@ daily_ohlcv 回补:
 
 ### 9. `capital_flow` — 资金流向
 
-> **主源：OpenTDX `stock_capital_flow`**（TCP，通达信，复用连接，~2min）
+> **主源：easy_tdx `stock_capital_flow`**（TCP，通达信，复用连接，~2min）
 > **接口说明：** 返回 `今日主力净流入` + `5日超大单/大单/中单/小单净额`（5日累计值）
 > **更新：** 每交易日 16:00，逐只查询写入（复用 TCP 连接）
 
@@ -267,19 +267,19 @@ daily_ohlcv 回补:
 
 | 字段 | 类型 | 说明 | 来源 |
 |------|------|------|------|
-| `symbol` | VARCHAR PK | 6位股票代码 | OpenTDX |
-| `date` | DATE PK | 交易日 | OpenTDX |
-| `net_main` | DOUBLE | 今日主力净流入 | OpenTDX `今日主力净流入` |
-| `net_super_5d` | DOUBLE | 5日超大单净额（累计） | OpenTDX `5日超大单净额` |
-| `net_large_5d` | DOUBLE | 5日大单净额（累计） | OpenTDX `5日大单净额` |
-| `net_medium_5d` | DOUBLE | 5日中单净额（累计） | OpenTDX `5日中单净额` |
-| `net_small_5d` | DOUBLE | 5日小单净额（累计） | OpenTDX `5日小单净额` |
+| `symbol` | VARCHAR PK | 6位股票代码 | easy_tdx |
+| `date` | DATE PK | 交易日 | easy_tdx |
+| `net_main` | DOUBLE | 今日主力净流入 | easy_tdx `今日主力净流入` |
+| `net_super_5d` | DOUBLE | 5日超大单净额（累计） | easy_tdx `5日超大单净额` |
+| `net_large_5d` | DOUBLE | 5日大单净额（累计） | easy_tdx `5日大单净额` |
+| `net_medium_5d` | DOUBLE | 5日中单净额（累计） | easy_tdx `5日中单净额` |
+| `net_small_5d` | DOUBLE | 5日小单净额（累计） | easy_tdx `5日小单净额` |
 
 **接口方案：**
 
 | 操作 | 接口 | 协议 | 耗时 |
 |------|------|------|------|
-| 每日增量 | **OpenTDX `stock_capital_flow`** | TCP | ~2min（5991只，复用连接） |
+| 每日增量 | **easy_tdx `stock_capital_flow`** | TCP | ~2min（5991只，复用连接） |
 
 **更新时序：**
 
@@ -295,7 +295,7 @@ daily_ohlcv 回补:
 
 ### 10. `board_daily` — 板块涨跌排名
 
-> **主源：OpenTDX `stock_board_members`**（TCP，通达信盘中实时，遍历板块成分股计算汇总）
+> **主源：easy_tdx `stock_board_members`**（TCP，通达信盘中实时，遍历板块成分股计算汇总）
 > **行业板块：** 全部 127 个，~3 秒
 > **概念板块：** 前 50 个，~1 秒
 > **汇总方式：** 每板块取成分股行情 → 算涨跌幅均值、上涨/下跌家数、领涨股
@@ -741,7 +741,7 @@ for item in data["data"]["diff"]:
 
 ### 19. `global_markets` — 外围行情
 
-> **主源：opentdx `goods_kline()`**（TCP，使用 `EX_MARKET` 枚举）
+> **主源：easy_tdx `goods_kline()`**（TCP，使用 `EX_MARKET` 枚举）
 > **更新：** 每交易日 09:00，自动删除 6 个月前旧数据
 
 | 字段 | 类型 | 说明 |
@@ -762,7 +762,7 @@ for item in data["data"]["diff"]:
 
 ## 各源引用接口一览
 
-### OpenTDX (opentdx) — 主数据源
+### easy_tdx（通达信协议封装）— 主数据源
 
 | 接口 | 数据 | 说明 |
 |------|------|------|
@@ -957,10 +957,10 @@ ingestion backfill --tables daily_valuation
 
 | 数据源 | 协议 | 可用性 | 数据类型 | 源更新时间 | 调度时间 | 备用源 | 备源差异 | 降级调整 |
 |--------|------|--------|---------|-----------|---------|--------|---------|---------|
-| **OpenTDX** | TCP | ✅ **通** | 全品种OHLCV(QFQ)、股票列表、板块归属、美股/港股/外汇K线 | 盘中实时（3-5s延迟） | 16:00后 | baostock (sh/sz only) | 无北交所、需adjustflag=2、有pctChg/turn字段 | 过滤bj代码 |
-| **baostock** | TCP | ✅ **通** | OHLCV(备)、估值历史(peTTM/pbMRQ/psTTM)、交易日历 | 收盘后 **~17:00** | 仅全量回补 | OpenTDX | OpenTDX无pe/pb直接返回需计算 | 无 |
+| **easy_tdx** | TCP | ✅ **通** | 全品种OHLCV(QFQ)、股票列表、板块归属、美股/港股/外汇K线、实时行情 | 盘中实时（3-5s延迟） | 16:00后 | baostock (sh/sz only) | 无北交所、需adjustflag=2、有pctChg/turn字段 | 过滤bj代码 |
+| **baostock** | TCP | ✅ **通** | OHLCV(备)、估值历史(peTTM/pbMRQ/psTTM)、交易日历 | 收盘后 **~17:00** | 仅全量回补 | easy_tdx | easy_tdx无pe/pb直接返回需计算 | 无 |
 | **腾讯API qt.gtimg.cn** | HTTP | ✅ **通** | PE_TTM/PB/总市值/流通市值/换手率/涨跌停价 | **盘中实时** | 16:00后 | — | — | — |
-| **东财 push2** | HTTP | ✅ **通** | 个股分钟级资金流向(主力/超大单/大单/中单/小单)、北向资金 | **盘中实时** | 16:00后 | OpenTDX stock_capital_flow | 只有今日主力净流入，无分单明细 | 仅可补net_main |
+| **东财 push2** | HTTP | ✅ **通** | 个股分钟级资金流向(主力/超大单/大单/中单/小单)、北向资金 | **盘中实时** | 16:00后 | easy_tdx stock_capital_flow | 只有今日主力净流入，无分单明细 | 仅可补net_main |
 | **同花顺 10jqka** | HTTP | ✅ **通** | 当日强势股题材归因（人工运营tags） | **盘中实时** | 17:00后 | — | — | — |
 | **东财 datacenter** | HTTP | ✅ **通** | 龙虎榜/解禁/大宗/股东/分红/除权；研报列表 | 盘后更新 | 17:00后 | — | — | — |
 | **akshare stock_yjbb_em** | HTTP | ✅ **通** | 季度财务全市场批量(含EPS/ROE/营收/净利/毛利率) | 季度数据 | 每季度末 | mootdx finance | 逐只TCP，37字段更全但仅自选股 | 仅自选股 |
@@ -1000,8 +1000,8 @@ ingestion schedule
 | 表 | 限制 | 原因 |
 |---|------|------|
 | `xdxr_events` | `cash_dividend`/`transfer_ratio`/`category` 始终 NULL | 东财 API 已不再返回这些字段 |
-| `board_daily` | `total_mv`/`turnover_rate`/`up_count`/`down_count`/`leader_pct` 全 None | opentdx 板块 API 不提供这些字段 |
+| `board_daily` | `total_mv`/`turnover_rate`/`up_count`/`down_count`/`leader_pct` 全 None | easy_tdx 板块 API 不提供这些字段 |
 | `lockup_calendar` | `unlock_vol`/`status` NULL | 东财 API 已不再提供这些字段 |
-| `capital_flow` | `net_super_5d` 等字段为 5 日累计而非当值 | opentdx API 限制 |
+| `capital_flow` | `net_super_5d` 等字段为 5 日累计而非当值 | easy_tdx API 限制 |
 | `holder_count` | `change_qoq`/`avg_shares` 始终 NULL | 东财 API 已不再提供这些字段 |
 
