@@ -104,7 +104,7 @@
 > **主源：easy_tdx `stock_kline(adjust=QFQ)`**（TCP，前复权，8 线程并发）
 > **备源：baostock `query_history_k_data_plus(adjustflag=2)`**（TCP，仅 sh/sz）
 > **增量：** 每交易日 16:00，拉取近 5 天
-> **回补：** count=800，过滤 2010-01-01 前数据
+> **回补：** count=800，过滤 2016-01-01 前数据
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -119,7 +119,7 @@
 | `pct_chg` | DOUBLE | 涨跌幅（%） |
 | `turnover_rate` | DOUBLE | 换手率（%） |
 
-**覆盖：** A 股 + ETF + 指数等（跟随 `stock_universe`），2010-01-01 起，前复权。ETF/指数无需复权（QFQ 对其无影响）。
+**覆盖：** A 股 + ETF 等（跟随 `stock_universe`），2016-01-01 起，前复权。
 
 ---
 
