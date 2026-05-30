@@ -169,7 +169,7 @@ http://localhost:5000
 
 ## MCP Server（HTTP/SSE）
 
-提供 **18 个只读数据工具**，其他 Agent 可通过 MCP 协议远程查询数据。
+提供 **34 个数据工具**（只读查询 + 实时行情 + 舆情 + 计算），其他 Agent 可通过 MCP 协议远程查询数据。
 
 Docker 部署后自动启动，端口 `8000`。其他 Agent 配置：
 
@@ -183,28 +183,64 @@ Docker 部署后自动启动，端口 `8000`。其他 Agent 配置：
 }
 ```
 
+### 历史查询（直查 DuckDB，毫秒级）
+
 | 工具 | 说明 |
 |------|------|
 | `query_kline` | 日K线（前复权） |
-| `query_valuation` | PE/PB/估值数据 |
+| `query_valuation` | PE/PB/市值 |
+| `query_capital_flow` | 主力资金流向 |
 | `query_fundamentals` | 季度财务 |
-| `query_capital_flow` | 资金流向 |
 | `query_dragon_tiger` | 龙虎榜 |
-| `query_northbound_flow` | 北向资金 |
+| `query_dragon_tiger_seats` | 龙虎榜席位明细 |
 | `query_board_daily` | 板块涨跌排名 |
+| `query_northbound_flow` | 北向资金 |
 | `query_margin_trading` | 融资融券 |
-| `query_hot_stocks` | 热度排名 |
+| `query_hot_stocks` | 雪球热度排名 |
+| `query_hot_reasons` | 题材归因 |
 | `query_block_trades` | 大宗交易 |
 | `query_lockup_calendar` | 限售解禁 |
 | `query_global_markets` | 外围指数 |
 | `query_holder_count` | 股东户数 |
-| `search_stocks` | 股票搜索 |
+| `query_shareholder_changes` | 增减持 |
 | `query_industry_stocks` | 行业成分股 |
 | `query_concept_stocks` | 概念板块 |
+| `search_stocks` | 股票搜索 |
 | `get_market_overview` | 市场概览 |
 | `run_sql` | 自定义只读SQL |
 
-> MCP Server 只提供**稳定读接口**，与在线/实验性功能分离。在线数据获取和自定义分析通过 `.claude/skills/ashare-data-warehouse.md` Skill 实现。
+### 实时行情（DataService 内存缓存）
+
+| 工具 | 说明 | 缓存 |
+|------|------|------|
+| `get_realtime_quote` | 个股实时行情 | 3s / 1h |
+| `get_realtime_quotes` | 批量实时行情 | 3s / 1h |
+| `get_intraday_kline` | 分钟K线 | 30s / 永久 |
+| `get_limit_up_ladder` | 涨停梯队 | 30s / 永久 |
+
+### 舆情查询（按需拉取 + 自动落库）
+
+| 工具 | 说明 |
+|------|------|
+| `get_latest_news` | 财联社快讯 |
+| `get_stock_news` | 个股新闻 |
+| `get_announcements` | 巨潮公告 |
+| `get_research_reports` | 个股研报 |
+| `get_eps_consensus` | 一致预期EPS |
+
+### 计算工具
+
+| 工具 | 说明 |
+|------|------|
+| `compute_indicator` | 个股技术指标计算 |
+| `find_signal_stocks` | 全市场信号扫描 |
+
+### 系统管理
+
+| 工具 | 说明 |
+|------|------|
+| `clear_cache` | 清除缓存 |
+| `cache_stats` | 缓存统计 |
 
 ---
 
@@ -264,7 +300,7 @@ cp data/ingestion/stock_research.duckdb backup/$(date +%Y%m%d).duckdb
 
 本项目受 [simonlin1212/a-stock-data](https://github.com/simonlin1212/a-stock-data) 启发，在其数据采集思路上重构为 DuckDB 持久化 + 并发调度 + Docker 部署的生产级数据管道。
 
-依赖的开源项目：opentdx、baostock、akshare、DuckDB、pandas、pyarrow。
+依赖的开源项目：easy_tdx、baostock、akshare、DuckDB、pandas、pyarrow、mcp、flask、httpx、schedule。
 
 ## 许可证
 
